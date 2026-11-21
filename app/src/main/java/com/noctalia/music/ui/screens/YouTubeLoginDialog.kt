@@ -164,7 +164,6 @@ fun YouTubeLoginDialog(
                         settings.allowFileAccess = false
                         settings.allowContentAccess = false
                         settings.setGeolocationEnabled(false)
-                        settings.databaseEnabled = false
                         settings.setSupportMultipleWindows(false)
                         settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
                         settings.cacheMode = WebSettings.LOAD_NO_CACHE

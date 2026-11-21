@@ -352,11 +352,13 @@ fun FullPlayerOverlay(
     offline: OfflineState,
     bgStyle: PlayerBgStyle,
     bgUseCoverColors: Boolean,
+    dynamicAppTheme: Boolean,
     isFavorite: Boolean,
     favoriteIds: Set<String>,
     onCollapse: () -> Unit,
     onSelectBgStyle: (PlayerBgStyle) -> Unit,
     onToggleBgUseCoverColors: (Boolean) -> Unit,
+    onToggleDynamicAppTheme: (Boolean) -> Unit,
     onArtistClick: (String) -> Unit,
     onPlayPause: () -> Unit,
     onNext: () -> Unit,
@@ -669,6 +671,21 @@ fun FullPlayerOverlay(
                                     Switch(
                                         checked = bgUseCoverColors,
                                         onCheckedChange = onToggleBgUseCoverColors,
+                                        colors = SwitchDefaults.colors(checkedThumbColor = NoctaliaColors.OnCyan, checkedTrackColor = NoctaliaColors.Cyan),
+                                    )
+                                }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                ) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text("Tema dinámico en toda la app", color = NoctaliaColors.TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                        Text("Cambia botones, dock, bordes y onda según la canción", color = NoctaliaColors.TextMuted, fontSize = 11.sp)
+                                    }
+                                    Switch(
+                                        checked = dynamicAppTheme,
+                                        onCheckedChange = onToggleDynamicAppTheme,
                                         colors = SwitchDefaults.colors(checkedThumbColor = NoctaliaColors.OnCyan, checkedTrackColor = NoctaliaColors.Cyan),
                                     )
                                 }

@@ -99,6 +99,7 @@ fun LibraryScreen(
     onImportJsonClick: () -> Unit,
     onSelectBgStyle: (PlayerBgStyle) -> Unit,
     onToggleBgUseCoverColors: (Boolean) -> Unit,
+    onToggleDynamicAppTheme: (Boolean) -> Unit,
     onCheckUpdate: () -> Unit,
     onDownloadUpdate: () -> Unit,
     onOpenReleases: () -> Unit,
@@ -710,7 +711,7 @@ fun LibraryScreen(
                                             modifier = Modifier.weight(1f),
                                             colors = ButtonDefaults.buttonColors(
                                                 containerColor = if (info.updateAvailable) NoctaliaColors.Magenta else NoctaliaColors.Glass,
-                                                contentColor = if (info.updateAvailable) Color(0xFF17051A) else NoctaliaColors.TextPrimary,
+                                                contentColor = if (info.updateAvailable) NoctaliaColors.OnMagenta else NoctaliaColors.TextPrimary,
                                             ),
                                             shape = RoundedCornerShape(14.dp),
                                         ) {
@@ -783,6 +784,33 @@ fun LibraryScreen(
                                     Switch(
                                         checked = library.settings.bgUseCoverColors,
                                         onCheckedChange = onToggleBgUseCoverColors,
+                                        colors = SwitchDefaults.colors(
+                                            checkedThumbColor = NoctaliaColors.OnCyan,
+                                            checkedTrackColor = NoctaliaColors.Cyan,
+                                        ),
+                                    )
+                                }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                ) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(
+                                            text = "Tema dinámico en toda la app",
+                                            color = NoctaliaColors.TextPrimary,
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.Bold,
+                                        )
+                                        Text(
+                                            text = "Adapta botones, dock, bordes y onda a la portada actual",
+                                            color = NoctaliaColors.TextMuted,
+                                            fontSize = 11.sp,
+                                        )
+                                    }
+                                    Switch(
+                                        checked = library.settings.dynamicAppTheme,
+                                        onCheckedChange = onToggleDynamicAppTheme,
                                         colors = SwitchDefaults.colors(
                                             checkedThumbColor = NoctaliaColors.OnCyan,
                                             checkedTrackColor = NoctaliaColors.Cyan,

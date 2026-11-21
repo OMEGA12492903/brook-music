@@ -188,6 +188,11 @@ class LibraryRepository(context: Context) {
         persist(cur.copy(settings = cur.settings.copy(bgUseCoverColors = useCover)))
     }
 
+    fun updateDynamicAppTheme(enabled: Boolean) {
+        val cur = _state.value
+        persist(cur.copy(settings = cur.settings.copy(dynamicAppTheme = enabled)))
+    }
+
     fun exportJson(): String = json.encodeToString(_state.value)
 
     fun importJson(rawJson: String): Boolean {

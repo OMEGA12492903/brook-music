@@ -696,7 +696,7 @@ fun TrackActionsBottomSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        containerColor = Color(0xF50A141E),
+        containerColor = NoctaliaColors.GlassStrong.copy(alpha = 0.96f),
         contentColor = NoctaliaColors.TextPrimary,
         scrimColor = Color(0xAA02060B),
     ) {

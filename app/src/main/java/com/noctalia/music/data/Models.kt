@@ -23,6 +23,7 @@ data class LibrarySettings(
     @SerialName("loop_status") val loopStatus: String = "None",
     @SerialName("bg_style") val bgStyle: String = "liquid",
     @SerialName("bg_use_cover_colors") val bgUseCoverColors: Boolean = true,
+    @SerialName("dynamic_app_theme") val dynamicAppTheme: Boolean = true,
 )
 
 /**

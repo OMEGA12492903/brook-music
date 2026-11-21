@@ -83,6 +83,7 @@ import com.noctalia.music.ui.screens.SearchScreen
 import com.noctalia.music.ui.screens.YouTubeLoginDialog
 import com.noctalia.music.ui.theme.NoctaliaColors
 import com.noctalia.music.ui.theme.NoctaliaTheme
+import com.noctalia.music.ui.theme.SyncDynamicBrookTheme
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -192,6 +193,12 @@ private fun NoctaliaRootScreen(vm: NoctaliaViewModel = viewModel()) {
 
     val navOrder = mapOf("home" to 0, "search" to 1, "library" to 2)
 
+    // Sincroniza dinámicamente todos los colores de Brook con la portada de la canción que suena
+    SyncDynamicBrookTheme(
+        coverUrl = player.currentTrack?.thumb,
+        enabled = library.settings.dynamicAppTheme,
+    )
+
     NoctaliaBackground {
         Box(
             modifier = Modifier
@@ -296,6 +303,7 @@ private fun NoctaliaRootScreen(vm: NoctaliaViewModel = viewModel()) {
                     onImportJsonClick = { importLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
                     onSelectBgStyle = { vm.library.updatePlayerBgStyle(it.id) },
                     onToggleBgUseCoverColors = { vm.library.updatePlayerBgUseCoverColors(it) },
+                    onToggleDynamicAppTheme = { vm.library.updateDynamicAppTheme(it) },
                     onCheckUpdate = { vm.checkAppUpdate() },
                     onDownloadUpdate = { vm.downloadAndInstallUpdate() },
                     onOpenReleases = { vm.openReleasesPage() },
@@ -325,7 +333,7 @@ private fun NoctaliaRootScreen(vm: NoctaliaViewModel = viewModel()) {
                     ) {
                         MiniPlayerBar(
                             player = player,
-                            useCoverColors = library.settings.bgUseCoverColors,
+                            useCoverColors = library.settings.bgUseCoverColors || library.settings.dynamicAppTheme,
                             onExpand = { fullPlayerOpen = true },
                             onPlayPause = { vm.player.togglePlayPause() },
                             onNext = { vm.player.skipNext() },
@@ -385,11 +393,13 @@ private fun NoctaliaRootScreen(vm: NoctaliaViewModel = viewModel()) {
                 offline = offline,
                 bgStyle = PlayerBgStyle.fromId(library.settings.bgStyle),
                 bgUseCoverColors = library.settings.bgUseCoverColors,
+                dynamicAppTheme = library.settings.dynamicAppTheme,
                 isFavorite = player.currentTrack?.id in favIds,
                 favoriteIds = favIds,
                 onCollapse = { fullPlayerOpen = false },
                 onSelectBgStyle = { vm.library.updatePlayerBgStyle(it.id) },
                 onToggleBgUseCoverColors = { vm.library.updatePlayerBgUseCoverColors(it) },
+                onToggleDynamicAppTheme = { vm.library.updateDynamicAppTheme(it) },
                 onArtistClick = { artist ->
                     fullPlayerOpen = false
                     currentNav = "search"
