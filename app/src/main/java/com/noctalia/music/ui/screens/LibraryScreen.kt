@@ -47,6 +47,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.noctalia.music.data.LibraryPayload
+import com.noctalia.music.data.OfflineState
 import com.noctalia.music.data.RemotePlaylist
 import com.noctalia.music.data.Track
 import com.noctalia.music.player.PlayerUiState
@@ -62,11 +63,14 @@ fun LibraryScreen(
     ui: MainUiState,
     player: PlayerUiState,
     library: LibraryPayload,
+    offline: OfflineState,
     initialTab: String,
     onPlayTrack: (Track) -> Unit,
     onPlayTrackList: (List<Track>, Int) -> Unit,
     onAddQueue: (Track) -> Unit,
     onToggleFavorite: (Track) -> Unit,
+    onCacheTracksOffline: (List<Track>, String) -> Unit,
+    onClearOfflineCache: () -> Unit,
     onCreatePlaylist: (String) -> Unit,
     onDeletePlaylist: (String) -> Unit,
     onSaveCurrentToPlaylist: (String) -> Unit,
@@ -235,17 +239,24 @@ fun LibraryScreen(
         when (activeTab) {
             "favs" -> {
                 if (library.favorites.isNotEmpty()) {
-                    Button(
-                        onClick = { onPlayTrackList(library.favorites, 0) },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = NoctaliaColors.Cyan,
-                            contentColor = NoctaliaColors.OnCyan,
-                        ),
-                        shape = RoundedCornerShape(99.dp),
-                    ) {
-                        Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("Reproducir Favoritas", fontWeight = FontWeight.ExtraBold, fontSize = 12.sp)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Button(
+                            onClick = { onPlayTrackList(library.favorites, 0) },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = NoctaliaColors.Cyan,
+                                contentColor = NoctaliaColors.OnCyan,
+                            ),
+                            shape = RoundedCornerShape(99.dp),
+                        ) {
+                            Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Reproducir Favoritas", fontWeight = FontWeight.ExtraBold, fontSize = 12.sp)
+                        }
+                        NoctaliaPillChip(
+                            label = "Modo sin conexión",
+                            active = false,
+                            onClick = { onCacheTracksOffline(library.favorites, "Favoritas") },
+                        )
                     }
                 }
                 LazyColumn(
@@ -679,6 +690,41 @@ fun LibraryScreen(
                                     fontWeight = FontWeight.SemiBold,
                                     modifier = Modifier.clickable(onClick = onOpenReleases),
                                 )
+                            }
+                        }
+                    }
+
+                    // Tarjeta de Caché Sin Conexión (Modo Avión / Metro)
+                    item {
+                        NoctaliaGlassCard(cornerRadius = 18.dp, strong = true, modifier = Modifier.fillMaxWidth()) {
+                            Column(
+                                modifier = Modifier.padding(16.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                Text(
+                                    text = "Modo sin conexión (Caché local)",
+                                    color = NoctaliaColors.CyanGlow,
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                )
+                                val mb = offline.totalBytes / (1024.0 * 1024.0)
+                                Text(
+                                    text = "${offline.cachedIds.size} canciones guardadas · %.1f MB en almacenamiento privado de Brook.".format(mb),
+                                    color = NoctaliaColors.TextMuted,
+                                    fontSize = 13.sp,
+                                )
+                                if (offline.cachedIds.isNotEmpty()) {
+                                    Button(
+                                        onClick = onClearOfflineCache,
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = NoctaliaColors.Danger.copy(alpha = 0.22f),
+                                            contentColor = NoctaliaColors.Danger,
+                                        ),
+                                        shape = RoundedCornerShape(14.dp),
+                                    ) {
+                                        Text("Vaciar caché sin conexión", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                    }
+                                }
                             }
                         }
                     }

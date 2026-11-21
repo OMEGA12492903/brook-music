@@ -9,6 +9,7 @@ import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
@@ -20,6 +21,7 @@ import com.noctalia.music.MainActivity
 import com.noctalia.music.NoctaliaMusicApp
 import com.noctalia.music.data.SecurityValidators
 import com.noctalia.music.data.YTMusicApi
+import java.io.File
 
 /**
  * Servicio en primer plano (Media3 MediaSessionService) endurecido:
@@ -38,8 +40,10 @@ class NoctaliaPlaybackService : MediaSessionService() {
         super.onCreate()
         val app = NoctaliaMusicApp.instance
 
-        val dataSourceFactory = OkHttpDataSource.Factory(app.api.streamHttpClient)
+        val httpFactory = OkHttpDataSource.Factory(app.api.streamHttpClient)
             .setUserAgent(YTMusicApi.IOS_UA)
+        // DefaultDataSource permite reproducir tanto streams HTTPS validados como archivos locales de nuestra caché offline
+        val dataSourceFactory = DefaultDataSource.Factory(this, httpFactory)
 
         val audioAttrs = AudioAttributes.Builder()
             .setUsage(C.USAGE_MEDIA)
@@ -54,6 +58,16 @@ class NoctaliaPlaybackService : MediaSessionService() {
             .build()
 
         exoPlayer = player
+        if (player.audioSessionId > 0) {
+            app.audioEffects.attachToSession(player.audioSessionId)
+        }
+        player.addListener(object : Player.Listener {
+            override fun onAudioSessionIdChanged(audioSessionId: Int) {
+                if (audioSessionId > 0) {
+                    app.audioEffects.attachToSession(audioSessionId)
+                }
+            }
+        })
 
         val wrappedPlayer = object : ForwardingPlayer(player) {
             override fun getAvailableCommands(): Player.Commands {
@@ -128,9 +142,19 @@ class NoctaliaPlaybackService : MediaSessionService() {
                 if (controller.packageName != packageName) {
                     return Futures.immediateFuture(mutableListOf())
                 }
+                val offlineRoot = File(filesDir, "offline_audio").canonicalPath
                 val safeItems = mediaItems.filter { item ->
-                    val uriStr = item.localConfiguration?.uri?.toString()
-                    SecurityValidators.isSafeStreamUrl(uriStr)
+                    val uri = item.localConfiguration?.uri ?: return@filter false
+                    val uriStr = uri.toString()
+                    if (SecurityValidators.isSafeStreamUrl(uriStr)) return@filter true
+                    if (uri.scheme == "file" && !uri.path.isNullOrBlank()) {
+                        return@filter try {
+                            File(uri.path!!).canonicalPath.startsWith("$offlineRoot/")
+                        } catch (_: Exception) {
+                            false
+                        }
+                    }
+                    false
                 }.toMutableList()
                 return Futures.immediateFuture(safeItems)
             }
@@ -152,6 +176,7 @@ class NoctaliaPlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        try { NoctaliaMusicApp.instance.audioEffects.release() } catch (_: Exception) {}
         mediaSession?.run {
             release()
             mediaSession = null

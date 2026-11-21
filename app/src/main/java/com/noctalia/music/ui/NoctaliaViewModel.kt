@@ -5,9 +5,11 @@ import androidx.lifecycle.viewModelScope
 import com.noctalia.music.NoctaliaMusicApp
 import com.noctalia.music.data.AppUpdateInfo
 import com.noctalia.music.data.LibraryPayload
+import com.noctalia.music.data.OfflineState
 import com.noctalia.music.data.RemotePlaylist
 import com.noctalia.music.data.SecurityValidators
 import com.noctalia.music.data.Track
+import com.noctalia.music.player.AudioFxState
 import com.noctalia.music.player.PlayerUiState
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -28,6 +30,7 @@ data class MainUiState(
     val homeTracks: List<Track> = emptyList(),
     val loadingHome: Boolean = false,
     val searchQuery: String = "",
+    val searchMode: String = "songs", // "songs" | "all" | "artist"
     val searchResults: List<Track> = emptyList(),
     val searching: Boolean = false,
     val checkingUpdate: Boolean = false,
@@ -44,10 +47,14 @@ class NoctaliaViewModel : ViewModel() {
     val api = app.api
     val library = app.library
     val updater = app.updater
+    val offlineCache = app.offlineCache
+    val audioEffects = app.audioEffects
     val player = app.playerController
 
     val playerState: StateFlow<PlayerUiState> = player.state
     val libraryState: StateFlow<LibraryPayload> = library.state
+    val offlineState: StateFlow<OfflineState> = offlineCache.state
+    val audioFxState: StateFlow<AudioFxState> = audioEffects.state
 
     private val _ui = MutableStateFlow(
         MainUiState(
@@ -82,8 +89,9 @@ class NoctaliaViewModel : ViewModel() {
         }
     }
 
-    fun onSearchQueryChanged(query: String, immediate: Boolean = false) {
-        _ui.update { it.copy(searchQuery = query) }
+    fun onSearchQueryChanged(query: String, immediate: Boolean = false, mode: String? = null) {
+        val nextMode = mode ?: _ui.value.searchMode
+        _ui.update { it.copy(searchQuery = query, searchMode = nextMode) }
         searchJob?.cancel()
         val trimmed = query.trim()
         if (trimmed.isEmpty()) {
@@ -93,9 +101,51 @@ class NoctaliaViewModel : ViewModel() {
         searchJob = viewModelScope.launch {
             if (!immediate) delay(420L)
             _ui.update { it.copy(searching = true) }
-            val items = api.search(trimmed, limit = 20)
+            val items = api.search(trimmed, limit = 20, mode = nextMode)
             _ui.update { it.copy(searchResults = items, searching = false) }
         }
+    }
+
+    fun setSearchMode(mode: String) {
+        onSearchQueryChanged(_ui.value.searchQuery, immediate = true, mode = mode)
+    }
+
+    fun toggleOfflineTrack(track: Track) {
+        viewModelScope.launch {
+            if (offlineCache.isCached(track.id)) {
+                offlineCache.removeTrack(track.id)
+                showMessage("Quitada «${track.title}» de caché sin conexión.")
+            } else {
+                showMessage("Guardando «${track.title}» sin conexión...")
+                val ok = offlineCache.cacheTrack(track)
+                showMessage(
+                    if (ok) "«${track.title}» lista para escuchar sin conexión."
+                    else "No se pudo guardar «${track.title}» sin conexión."
+                )
+            }
+        }
+    }
+
+    fun cacheTrackListOffline(tracks: List<Track>, label: String) {
+        if (tracks.isEmpty()) return
+        viewModelScope.launch {
+            val pending = tracks.filterNot { offlineCache.isCached(it.id) }.take(30)
+            if (pending.isEmpty()) {
+                showMessage("Todas las canciones de $label ya están guardadas sin conexión.")
+                return@launch
+            }
+            showMessage("Descargando ${pending.size} canciones de $label para modo sin conexión...")
+            var okCount = 0
+            for (t in pending) {
+                if (offlineCache.cacheTrack(t)) okCount++
+            }
+            showMessage("Listo: $okCount canciones guardadas sin conexión.")
+        }
+    }
+
+    fun clearOfflineCache() {
+        offlineCache.clearAll()
+        showMessage("Caché sin conexión vaciada.")
     }
 
     fun onYouTubeLoginSuccess(cookie: String) {

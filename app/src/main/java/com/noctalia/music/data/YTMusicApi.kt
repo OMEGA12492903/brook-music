@@ -149,14 +149,18 @@ class YTMusicApi(private val authStore: AuthStore) {
         }
     }
 
-    suspend fun search(query: String, limit: Int = 20): List<Track> = withContext(Dispatchers.IO) {
+    suspend fun search(query: String, limit: Int = 20, mode: String = "songs"): List<Track> = withContext(Dispatchers.IO) {
         val q = query.trim().take(180)
         if (q.isEmpty()) return@withContext emptyList()
 
-        val songs = innerTubeSearch(q, SONGS_FILTER_PARAMS, limit)
+        if (mode == "all") {
+            return@withContext innerTubeSearch(q, null, limit)
+        }
+        val effectiveQuery = if (mode == "artist") "$q top songs" else q
+        val songs = innerTubeSearch(effectiveQuery, SONGS_FILTER_PARAMS, limit)
         if (songs.size >= 5) return@withContext songs
 
-        val extra = innerTubeSearch(q, null, limit)
+        val extra = innerTubeSearch(effectiveQuery, null, limit)
         val merged = LinkedHashMap<String, Track>()
         songs.forEach { merged[it.id] = it }
         extra.forEach { if (!merged.containsKey(it.id) && merged.size < limit) merged[it.id] = it }

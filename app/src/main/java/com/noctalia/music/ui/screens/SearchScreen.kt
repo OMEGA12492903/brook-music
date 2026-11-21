@@ -54,6 +54,7 @@ fun SearchScreen(
     player: PlayerUiState,
     library: LibraryPayload,
     onQueryChange: (String, Boolean) -> Unit,
+    onModeChange: (String) -> Unit,
     onPlayTrack: (Track) -> Unit,
     onAddQueue: (Track) -> Unit,
     onToggleFavorite: (Track) -> Unit,
@@ -64,7 +65,7 @@ fun SearchScreen(
         modifier = Modifier
             .fillMaxSize()
             .padding(horizontal = 16.dp, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Text(
             text = "Buscar en YouTube Music",
@@ -104,6 +105,21 @@ fun SearchScreen(
                 cursorColor = NoctaliaColors.CyanGlow,
             ),
         )
+
+        // Filtros de búsqueda: Canciones / Artistas / Todo (Álbumes y Remixes)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf(
+                "songs" to "Canciones",
+                "artist" to "Artista",
+                "all" to "Todo / Remixes",
+            ).forEach { (mode, label) ->
+                NoctaliaPillChip(
+                    label = label,
+                    active = ui.searchMode == mode,
+                    onClick = { onModeChange(mode) },
+                )
+            }
+        }
 
         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             items(SEARCH_CHIPS) { (label, query) ->

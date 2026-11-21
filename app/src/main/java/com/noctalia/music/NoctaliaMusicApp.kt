@@ -6,7 +6,11 @@ import coil.ImageLoaderFactory
 import com.noctalia.music.data.AppUpdater
 import com.noctalia.music.data.AuthStore
 import com.noctalia.music.data.LibraryRepository
+import com.noctalia.music.data.LyricsClient
+import com.noctalia.music.data.OfflineCacheManager
+import com.noctalia.music.data.SponsorBlockClient
 import com.noctalia.music.data.YTMusicApi
+import com.noctalia.music.player.AudioEffectsController
 import com.noctalia.music.player.MusicPlayerController
 
 class NoctaliaMusicApp : Application(), ImageLoaderFactory {
@@ -19,6 +23,14 @@ class NoctaliaMusicApp : Application(), ImageLoaderFactory {
         private set
     lateinit var updater: AppUpdater
         private set
+    lateinit var lyricsClient: LyricsClient
+        private set
+    lateinit var sponsorBlock: SponsorBlockClient
+        private set
+    lateinit var offlineCache: OfflineCacheManager
+        private set
+    lateinit var audioEffects: AudioEffectsController
+        private set
     lateinit var playerController: MusicPlayerController
         private set
 
@@ -29,7 +41,11 @@ class NoctaliaMusicApp : Application(), ImageLoaderFactory {
         api = YTMusicApi(authStore)
         library = LibraryRepository(this)
         updater = AppUpdater(this)
-        playerController = MusicPlayerController(this, api, library)
+        lyricsClient = LyricsClient()
+        sponsorBlock = SponsorBlockClient()
+        offlineCache = OfflineCacheManager(this, api)
+        audioEffects = AudioEffectsController()
+        playerController = MusicPlayerController(this, api, library, lyricsClient, sponsorBlock, offlineCache, audioEffects)
     }
 
     /**

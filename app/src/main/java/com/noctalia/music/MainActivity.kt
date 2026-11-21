@@ -84,6 +84,8 @@ private fun NoctaliaRootScreen(vm: NoctaliaViewModel = viewModel()) {
     val ui by vm.ui.collectAsStateWithLifecycle()
     val player by vm.playerState.collectAsStateWithLifecycle()
     val library by vm.libraryState.collectAsStateWithLifecycle()
+    val offline by vm.offlineState.collectAsStateWithLifecycle()
+    val audioFx by vm.audioFxState.collectAsStateWithLifecycle()
 
     var currentNav by remember { mutableStateOf("home") }
     var libraryInitialTab by remember { mutableStateOf("favs") }
@@ -206,6 +208,7 @@ private fun NoctaliaRootScreen(vm: NoctaliaViewModel = viewModel()) {
                     player = player,
                     library = library,
                     onQueryChange = { q, imm -> vm.onSearchQueryChanged(q, immediate = imm) },
+                    onModeChange = { vm.setSearchMode(it) },
                     onPlayTrack = { vm.player.playTrack(it) },
                     onAddQueue = {
                         vm.player.addToQueue(it)
@@ -218,6 +221,7 @@ private fun NoctaliaRootScreen(vm: NoctaliaViewModel = viewModel()) {
                     ui = ui,
                     player = player,
                     library = library,
+                    offline = offline,
                     initialTab = libraryInitialTab,
                     onPlayTrack = { vm.player.playTrack(it) },
                     onPlayTrackList = { list, idx -> vm.player.playTrackList(list, idx) },
@@ -226,6 +230,8 @@ private fun NoctaliaRootScreen(vm: NoctaliaViewModel = viewModel()) {
                         vm.showMessage("Añadida «${it.title}» a la cola")
                     },
                     onToggleFavorite = { vm.library.toggleFavorite(it) },
+                    onCacheTracksOffline = { list, lbl -> vm.cacheTrackListOffline(list, lbl) },
+                    onClearOfflineCache = { vm.clearOfflineCache() },
                     onCreatePlaylist = { vm.library.createPlaylist(it) },
                     onDeletePlaylist = { vm.library.deletePlaylist(it) },
                     onSaveCurrentToPlaylist = { pl ->
@@ -313,9 +319,16 @@ private fun NoctaliaRootScreen(vm: NoctaliaViewModel = viewModel()) {
         if (fullPlayerOpen && player.currentTrack != null) {
             FullPlayerOverlay(
                 player = player,
+                audioFx = audioFx,
+                offline = offline,
                 isFavorite = player.currentTrack?.id in favIds,
                 favoriteIds = favIds,
                 onCollapse = { fullPlayerOpen = false },
+                onArtistClick = { artist ->
+                    fullPlayerOpen = false
+                    currentNav = "search"
+                    vm.onSearchQueryChanged(artist.substringBefore(",").trim(), immediate = true, mode = "artist")
+                },
                 onPlayPause = { vm.player.togglePlayPause() },
                 onNext = { vm.player.skipNext() },
                 onPrev = { vm.player.skipPrevious() },
@@ -323,10 +336,18 @@ private fun NoctaliaRootScreen(vm: NoctaliaViewModel = viewModel()) {
                 onToggleShuffle = { vm.player.toggleShuffle() },
                 onCycleRepeat = { vm.player.cycleRepeat() },
                 onToggleFavorite = { vm.library.toggleFavorite(it) },
+                onToggleOffline = { vm.toggleOfflineTrack(it) },
                 onToggleAutoRadio = { vm.player.setAutoRadio(it) },
                 onPlayQueueIndex = { vm.player.playFromQueue(it) },
                 onRemoveQueueIndex = { vm.player.removeFromQueue(it) },
                 onClearQueue = { vm.player.clearQueue() },
+                onSelectEqPreset = { vm.audioEffects.setPreset(it) },
+                onBassBoostChange = { vm.audioEffects.setBassBoost(it) },
+                onToggleNormalize = { vm.audioEffects.setNormalizeVolume(it) },
+                onToggleSponsorBlock = { vm.audioEffects.setSponsorBlock(it) },
+                onSetSleepMinutes = { vm.player.setSleepTimerMinutes(it) },
+                onSetSleepEndOfTrack = { vm.player.setSleepAtEndOfTrack() },
+                onCancelSleep = { vm.player.cancelSleepTimer() },
             )
         }
 

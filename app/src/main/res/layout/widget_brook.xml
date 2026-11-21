@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/widget_glass_bg"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
+    android:paddingLeft="14dp"
+    android:paddingRight="12dp"
+    android:paddingTop="10dp"
+    android:paddingBottom="10dp">
+
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:orientation="vertical"
+        android:paddingEnd="8dp">
+
+        <TextView
+            android:id="@+id/widget_badge"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="BROOK · OPUS"
+            android:textColor="#00F0FF"
+            android:textSize="10sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/widget_title"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:text="Brook Music"
+            android:textColor="#F0F9FF"
+            android:textSize="14sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/widget_artist"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:text="Toca para abrir"
+            android:textColor="#B3F0F9FF"
+            android:textSize="12sp" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/widget_btn_prev"
+        android:layout_width="34dp"
+        android:layout_height="34dp"
+        android:gravity="center"
+        android:text="⏮"
+        android:textColor="#F0F9FF"
+        android:textSize="16sp" />
+
+    <TextView
+        android:id="@+id/widget_btn_play"
+        android:layout_width="40dp"
+        android:layout_height="36dp"
+        android:layout_marginStart="4dp"
+        android:layout_marginEnd="4dp"
+        android:background="@drawable/widget_play_bg"
+        android:gravity="center"
+        android:text="▶"
+        android:textColor="#041318"
+        android:textSize="16sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/widget_btn_next"
+        android:layout_width="34dp"
+        android:layout_height="34dp"
+        android:gravity="center"
+        android:text="⏭"
+        android:textColor="#F0F9FF"
+        android:textSize="16sp" />
+
+</LinearLayout>

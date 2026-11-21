@@ -10,9 +10,15 @@ import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.noctalia.music.data.LibraryRepository
+import com.noctalia.music.data.LyricsClient
+import com.noctalia.music.data.LyricsResult
+import com.noctalia.music.data.OfflineCacheManager
 import com.noctalia.music.data.SecurityValidators
+import com.noctalia.music.data.SkipSegment
+import com.noctalia.music.data.SponsorBlockClient
 import com.noctalia.music.data.Track
 import com.noctalia.music.data.YTMusicApi
+import com.noctalia.music.widget.BrookWidgetProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -40,6 +46,11 @@ data class PlayerUiState(
     val shuffle: Boolean = false,
     val repeatMode: RepeatMode = RepeatMode.NONE,
     val autoRadio: Boolean = true,
+    val lyrics: LyricsResult = LyricsResult(),
+    val loadingLyrics: Boolean = false,
+    val sleepRemainingSec: Int? = null,
+    val sleepEndOfTrack: Boolean = false,
+    val sponsorSkippedNotice: String? = null,
     val errorMsg: String? = null,
 )
 
@@ -47,6 +58,10 @@ class MusicPlayerController(
     private val context: Context,
     private val api: YTMusicApi,
     private val library: LibraryRepository,
+    private val lyricsClient: LyricsClient,
+    private val sponsorBlock: SponsorBlockClient,
+    private val offlineCache: OfflineCacheManager,
+    private val audioEffects: AudioEffectsController,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
@@ -58,12 +73,19 @@ class MusicPlayerController(
     private var mediaController: MediaController? = null
     private var playJob: Job? = null
     private var radioJob: Job? = null
+    private var lyricsJob: Job? = null
+    private var sponsorJob: Job? = null
+    private var sleepJob: Job? = null
     private val history = ArrayDeque<Track>()
     private var retriedCurrent = false
+
+    private var activeSkipSegments: List<SkipSegment> = emptyList()
+    private val skippedSegmentKeys = HashSet<String>()
 
     private val playerListener = object : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             _state.update { it.copy(isPlaying = isPlaying) }
+            BrookWidgetProvider.updateAllWidgets(context)
         }
 
         override fun onPlaybackStateChanged(playbackState: Int) {
@@ -73,8 +95,15 @@ class MusicPlayerController(
                 Player.STATE_READY -> {
                     val dur = ctrl.duration.takeIf { it > 0 } ?: (_state.value.currentTrack?.duration?.times(1000L) ?: 0L)
                     _state.update { it.copy(isLoading = false, durationMs = dur, errorMsg = null) }
+                    BrookWidgetProvider.updateAllWidgets(context)
                 }
                 Player.STATE_ENDED -> {
+                    if (_state.value.sleepEndOfTrack) {
+                        _state.update { it.copy(sleepEndOfTrack = false, isPlaying = false) }
+                        ctrl.pause()
+                        BrookWidgetProvider.updateAllWidgets(context)
+                        return
+                    }
                     if (_state.value.repeatMode == RepeatMode.TRACK) {
                         ctrl.seekTo(0)
                         ctrl.play()
@@ -89,7 +118,6 @@ class MusicPlayerController(
         override fun onPlayerError(error: PlaybackException) {
             val cur = _state.value.currentTrack
             if (cur != null && !retriedCurrent) {
-                // Reintentar 1 vez forzando URL fresca por si expiró el token de googlevideo
                 retriedCurrent = true
                 playTrack(cur, pushHistory = false, forceFreshUrl = true)
             } else {
@@ -100,6 +128,7 @@ class MusicPlayerController(
                         errorMsg = "Error de reproducción. Pulsa de nuevo para reintentar.",
                     )
                 }
+                BrookWidgetProvider.updateAllWidgets(context)
             }
         }
     }
@@ -142,6 +171,25 @@ class MusicPlayerController(
                     val pos = ctrl.currentPosition.coerceAtLeast(0L)
                     val dur = ctrl.duration.takeIf { it > 0 }
                         ?: (_state.value.currentTrack?.duration?.times(1000L) ?: 0L)
+
+                    // SponsorBlock: saltar intros/segmentos no musicales automáticamente
+                    if (ctrl.isPlaying && audioEffects.state.value.sponsorBlockEnabled && activeSkipSegments.isNotEmpty()) {
+                        val hit = activeSkipSegments.firstOrNull { seg ->
+                            val key = "${seg.startMs}_${seg.endMs}"
+                            key !in skippedSegmentKeys && pos >= seg.startMs && pos < (seg.endMs - 800L)
+                        }
+                        if (hit != null) {
+                            skippedSegmentKeys.add("${hit.startMs}_${hit.endMs}")
+                            val target = hit.endMs.coerceAtMost((dur - 500L).coerceAtLeast(0L))
+                            ctrl.seekTo(target)
+                            _state.update { it.copy(sponsorSkippedNotice = "Saltado segmento no musical (SponsorBlock)") }
+                            scope.launch {
+                                delay(2600L)
+                                _state.update { it.copy(sponsorSkippedNotice = null) }
+                            }
+                        }
+                    }
+
                     _state.update {
                         if (it.positionMs != pos || it.durationMs != dur) {
                             it.copy(positionMs = pos, durationMs = dur)
@@ -150,7 +198,7 @@ class MusicPlayerController(
                         }
                     }
                 }
-                delay(300L)
+                delay(280L)
             }
         }
     }
@@ -165,6 +213,8 @@ class MusicPlayerController(
 
         library.recordRecent(clean)
         if (!forceFreshUrl) retriedCurrent = false
+        activeSkipSegments = emptyList()
+        skippedSegmentKeys.clear()
 
         _state.update {
             it.copy(
@@ -172,8 +222,32 @@ class MusicPlayerController(
                 isLoading = true,
                 positionMs = 0L,
                 durationMs = clean.duration * 1000L,
+                lyrics = LyricsResult(),
+                loadingLyrics = true,
+                sponsorSkippedNotice = null,
                 errorMsg = null,
             )
+        }
+        BrookWidgetProvider.updateAllWidgets(context)
+
+        // Cargar letras sincronizadas en paralelo
+        lyricsJob?.cancel()
+        lyricsJob = scope.launch {
+            val res = lyricsClient.fetchLyrics(clean)
+            if (_state.value.currentTrack?.id == clean.id) {
+                _state.update { it.copy(lyrics = res, loadingLyrics = false) }
+            }
+        }
+
+        // Cargar segmentos SponsorBlock en paralelo
+        sponsorJob?.cancel()
+        if (audioEffects.state.value.sponsorBlockEnabled) {
+            sponsorJob = scope.launch {
+                val segs = sponsorBlock.fetchSkipSegments(clean.id)
+                if (_state.value.currentTrack?.id == clean.id) {
+                    activeSkipSegments = segs
+                }
+            }
         }
 
         if (_state.value.autoRadio && _state.value.queue.isEmpty()) {
@@ -182,16 +256,29 @@ class MusicPlayerController(
 
         playJob?.cancel()
         playJob = scope.launch {
-            val resolved = api.resolveStreamUrl(clean.id, forceRefresh = forceFreshUrl)
-            if (resolved == null) {
-                _state.update {
-                    it.copy(
-                        isLoading = false,
-                        isPlaying = false,
-                        errorMsg = "No se pudo cargar el audio de esta canción.",
-                    )
+            // 1. Comprobar primero si está guardada en caché offline (0 datos, instantáneo)
+            val localFile = if (!forceFreshUrl) offlineCache.getLocalFile(clean.id) else null
+            val mediaUri: Uri
+            val qualityLabel: String
+
+            if (localFile != null) {
+                mediaUri = Uri.fromFile(localFile)
+                qualityLabel = "OFFLINE · OPUS"
+            } else {
+                val resolved = api.resolveStreamUrl(clean.id, forceRefresh = forceFreshUrl)
+                if (resolved == null) {
+                    _state.update {
+                        it.copy(
+                            isLoading = false,
+                            isPlaying = false,
+                            errorMsg = "No se pudo cargar el audio de esta canción.",
+                        )
+                    }
+                    BrookWidgetProvider.updateAllWidgets(context)
+                    return@launch
                 }
-                return@launch
+                mediaUri = Uri.parse(resolved.url)
+                qualityLabel = resolved.qualityLabel
             }
 
             val ctrl = ensureController()
@@ -210,11 +297,12 @@ class MusicPlayerController(
 
             val item = MediaItem.Builder()
                 .setMediaId(clean.id)
-                .setUri(resolved.url)
+                .setUri(mediaUri)
                 .setMediaMetadata(metadataBuilder.build())
                 .build()
 
-            _state.update { it.copy(qualityLabel = resolved.qualityLabel) }
+            _state.update { it.copy(qualityLabel = qualityLabel) }
+            ctrl.volume = 1f
             ctrl.setMediaItem(item)
             ctrl.prepare()
             ctrl.play()
@@ -241,6 +329,7 @@ class MusicPlayerController(
         if (ctrl.isPlaying) {
             ctrl.pause()
         } else {
+            ctrl.volume = 1f
             if (ctrl.playbackState == Player.STATE_IDLE || ctrl.playbackState == Player.STATE_ENDED) {
                 _state.value.currentTrack?.let { playTrack(it, pushHistory = false) }
             } else {
@@ -301,6 +390,45 @@ class MusicPlayerController(
         } else {
             seekTo(0L)
         }
+    }
+
+    // ─── TEMPORIZADOR DE APAGADO (SLEEP TIMER CON FADE-OUT SUAVE) ───
+    fun setSleepTimerMinutes(minutes: Int) {
+        sleepJob?.cancel()
+        if (minutes <= 0) {
+            cancelSleepTimer()
+            return
+        }
+        var rem = minutes * 60
+        _state.update { it.copy(sleepRemainingSec = rem, sleepEndOfTrack = false) }
+        sleepJob = scope.launch {
+            while (rem > 0) {
+                delay(1000L)
+                rem -= 1
+                _state.update { it.copy(sleepRemainingSec = rem) }
+            }
+            // Fade-out suave de 2 segundos antes de pausar
+            val ctrl = mediaController
+            if (ctrl != null && ctrl.isPlaying) {
+                for (step in 9 downTo 1) {
+                    ctrl.volume = step / 10f
+                    delay(200L)
+                }
+                ctrl.pause()
+                ctrl.volume = 1f
+            }
+            _state.update { it.copy(sleepRemainingSec = null, sleepEndOfTrack = false) }
+        }
+    }
+
+    fun setSleepAtEndOfTrack() {
+        sleepJob?.cancel()
+        _state.update { it.copy(sleepRemainingSec = null, sleepEndOfTrack = true) }
+    }
+
+    fun cancelSleepTimer() {
+        sleepJob?.cancel()
+        _state.update { it.copy(sleepRemainingSec = null, sleepEndOfTrack = false) }
     }
 
     fun addToQueue(track: Track) {
