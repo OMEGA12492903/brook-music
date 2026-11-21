@@ -60,6 +60,7 @@ fun HomeScreen(
     onToggleFavorite: (Track) -> Unit,
     onOpenLogin: () -> Unit,
     onOpenRemotePlaylist: (RemotePlaylist) -> Unit,
+    onRetryHome: () -> Unit,
 ) {
     val greeting = remember {
         when (Calendar.getInstance().get(Calendar.HOUR_OF_DAY)) {
@@ -281,6 +282,32 @@ fun HomeScreen(
                     horizontalArrangement = Arrangement.Center,
                 ) {
                     CircularProgressIndicator(color = NoctaliaColors.CyanGlow, strokeWidth = 2.5.dp)
+                }
+            }
+        } else if (feedTracks.isEmpty()) {
+            item {
+                NoctaliaGlassCard(cornerRadius = 16.dp, modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Text(
+                            text = "Sin conexión o sin resultados ahora mismo.",
+                            color = NoctaliaColors.TextPrimary,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                        )
+                        Text(
+                            text = "Puedes escuchar tus canciones guardadas en Listas o reintentar cuando tengas red.",
+                            color = NoctaliaColors.TextMuted,
+                            fontSize = 12.sp,
+                        )
+                        NoctaliaPillChip(
+                            label = "Reintentar",
+                            active = true,
+                            onClick = onRetryHome,
+                        )
+                    }
                 }
             }
         } else {

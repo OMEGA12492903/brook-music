@@ -2,11 +2,13 @@ package com.noctalia.music.data
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import androidx.core.content.FileProvider
 import com.noctalia.music.BuildConfig
+import java.security.MessageDigest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -193,12 +195,63 @@ class AppUpdater(private val context: Context) {
                 tmp.copyTo(target, overwrite = true)
                 tmp.delete()
             }
+
+            // Verificación criptográfica: exigir mismo packageName y misma firma RSA-4096 que la app instalada
+            if (!verifyApkMatchesInstalledSignature(target)) {
+                target.delete()
+                return@withContext Result.failure(
+                    SecurityException("Firma del APK descargado no coincide con Brook. Actualización bloqueada.")
+                )
+            }
+
             onProgress(1f)
             Result.success(target)
         } catch (e: Exception) {
             tmp.delete()
             Result.failure(e)
         }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun verifyApkMatchesInstalledSignature(apkFile: File): Boolean {
+        return try {
+            val pm = context.packageManager
+            val installedDigests = getCertSha256Set(
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    pm.getPackageInfo(context.packageName, PackageManager.GET_SIGNING_CERTIFICATES)
+                } else {
+                    pm.getPackageInfo(context.packageName, PackageManager.GET_SIGNATURES)
+                }
+            )
+            if (installedDigests.isEmpty()) return false
+
+            val archiveInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                pm.getPackageArchiveInfo(apkFile.absolutePath, PackageManager.GET_SIGNING_CERTIFICATES)
+            } else {
+                pm.getPackageArchiveInfo(apkFile.absolutePath, PackageManager.GET_SIGNATURES)
+            } ?: return false
+
+            if (archiveInfo.packageName != context.packageName) return false
+            val archiveDigests = getCertSha256Set(archiveInfo)
+            archiveDigests.isNotEmpty() && archiveDigests == installedDigests
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun getCertSha256Set(pkgInfo: android.content.pm.PackageInfo): Set<String> {
+        val sigs = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            val si = pkgInfo.signingInfo ?: return emptySet()
+            if (si.hasMultipleSigners()) si.apkContentsSigners else si.signingCertificateHistory
+        } else {
+            pkgInfo.signatures
+        } ?: return emptySet()
+
+        val md = MessageDigest.getInstance("SHA-256")
+        return sigs.map { sig ->
+            md.digest(sig.toByteArray()).joinToString("") { "%02x".format(it) }
+        }.toSet()
     }
 
     fun launchApkInstaller(apkFile: File): Boolean {

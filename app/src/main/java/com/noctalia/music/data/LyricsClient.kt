@@ -79,9 +79,8 @@ class LyricsClient {
             return@withContext searched
         }
 
-        val empty = LyricsResult()
-        putCache(track.id, empty)
-        empty
+        // No cachear fallos vacíos permanentemente por si el usuario estaba sin red
+        LyricsResult()
     }
 
     private fun queryExact(title: String, artist: String, durationSec: Int): LyricsResult? {

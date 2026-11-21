@@ -63,5 +63,9 @@
                 android:resource="@xml/brook_widget_info" />
         </receiver>
 
+        <receiver
+            android:name=".widget.BrookWidgetActionReceiver"
+            android:exported="false" />
+
     </application>
 </manifest>

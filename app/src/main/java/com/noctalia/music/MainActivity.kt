@@ -202,6 +202,7 @@ private fun NoctaliaRootScreen(vm: NoctaliaViewModel = viewModel()) {
                         currentNav = "library"
                         vm.openRemotePlaylist(pl)
                     },
+                    onRetryHome = { vm.refreshHome() },
                 )
 
                 "search" -> SearchScreen(

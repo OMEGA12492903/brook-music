@@ -57,8 +57,6 @@ class SponsorBlockClient {
             .addQueryParameter("videoID", videoId)
             .addQueryParameter("category", "music_offtopic")
             .addQueryParameter("category", "sponsor")
-            .addQueryParameter("category", "intro")
-            .addQueryParameter("category", "outro")
             .build()
 
         val req = Request.Builder()
@@ -67,9 +65,15 @@ class SponsorBlockClient {
             .get()
             .build()
 
+        var shouldCache = false
         val parsed = try {
             client.newCall(req).execute().use { resp ->
+                if (resp.code == 404) {
+                    shouldCache = true
+                    return@use emptyList()
+                }
                 if (!resp.isSuccessful) return@use emptyList()
+                shouldCache = true
                 val src = resp.body?.source() ?: return@use emptyList()
                 src.request(MAX_BYTES + 1)
                 if (src.buffer.size > MAX_BYTES) return@use emptyList()
@@ -88,8 +92,10 @@ class SponsorBlockClient {
             emptyList()
         }
 
-        if (cache.size > 80) cache.clear()
-        cache[videoId] = parsed
+        if (shouldCache) {
+            if (cache.size > 80) cache.clear()
+            cache[videoId] = parsed
+        }
         parsed
     }
 
