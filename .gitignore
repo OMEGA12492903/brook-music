@@ -1,0 +1,22 @@
+# Gradle / Android build artifacts
+.gradle/
+build/
+app/build/
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+*.ap_
+
+# Local machine & signing secrets (NEVER commit!)
+local.properties
+*.jks
+*.keystore
+keystore.properties
+
+# IDEs & OS
+.idea/
+*.iml
+.DS_Store
+Thumbs.db

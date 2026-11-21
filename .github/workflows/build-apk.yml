@@ -1,0 +1,78 @@
+name: Compilar y Publicar Brook APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-apk:
+    name: Compilar Brook.apk
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar código
+        uses: actions/checkout@v4
+
+      - name: Configurar Java 17 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Configurar Gradle 8.11.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Restaurar keystore de firma (si existe secret)
+        if: ${{ secrets.SIGNING_KEYSTORE_B64 != '' }}
+        env:
+          KEYSTORE_B64: ${{ secrets.SIGNING_KEYSTORE_B64 }}
+          KEYSTORE_PASS: ${{ secrets.SIGNING_PASSWORD }}
+        run: |
+          mkdir -p "$HOME/.local/share/noctalia-android-toolchain/keys"
+          printf '%s' "$KEYSTORE_B64" | base64 -d > "$HOME/.local/share/noctalia-android-toolchain/keys/noctalia-release.jks"
+          cat > "$HOME/.local/share/noctalia-android-toolchain/keys/keystore.properties" <<EOF
+          storeFile=$HOME/.local/share/noctalia-android-toolchain/keys/noctalia-release.jks
+          storePassword=$KEYSTORE_PASS
+          keyAlias=noctalia_music
+          keyPassword=$KEYSTORE_PASS
+          EOF
+
+      - name: Compilar APK Release
+        run: gradle assembleRelease --no-daemon
+
+      - name: Extraer metadatos de versión
+        id: ver
+        run: |
+          VNAME=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts | head -n1)
+          VCODE=$(grep -oP 'versionCode\s*=\s*\K\d+' app/build.gradle.kts | head -n1)
+          echo "vname=$VNAME" >> "$GITHUB_OUTPUT"
+          echo "vcode=$VCODE" >> "$GITHUB_OUTPUT"
+          mkdir -p release-apk
+          cp app/build/outputs/apk/release/app-release.apk release-apk/Brook.apk
+          ls -lh release-apk/Brook.apk
+
+      - name: Subir artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: Brook-apk
+          path: release-apk/Brook.apk
+          retention-days: 30
+
+      - name: Publicar Release en GitHub (tag latest)
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: "Brook v${{ steps.ver.outputs.vname }}"
+          body: |
+            Brook Android **v${{ steps.ver.outputs.vname }}** (versionCode: ${{ steps.ver.outputs.vcode }})
+            Compilado automáticamente desde `${{ github.sha }}`.
+          files: release-apk/Brook.apk
+          overwrite_files: true
+          make_latest: true

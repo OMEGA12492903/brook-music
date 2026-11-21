@@ -1,0 +1,161 @@
+package com.noctalia.music.ui.screens
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.noctalia.music.data.LibraryPayload
+import com.noctalia.music.data.Track
+import com.noctalia.music.player.PlayerUiState
+import com.noctalia.music.ui.MainUiState
+import com.noctalia.music.ui.components.NoctaliaPillChip
+import com.noctalia.music.ui.components.TrackRowItem
+import com.noctalia.music.ui.theme.NoctaliaColors
+
+private val SEARCH_CHIPS = listOf(
+    "Urbano" to "reggaeton urbano",
+    "Phonk" to "phonk drift",
+    "Lo-Fi" to "lofi beats",
+    "Rock" to "rock hits",
+    "Electrónica" to "electronic hits",
+    "Anime OST" to "anime opening ost",
+)
+
+@Composable
+fun SearchScreen(
+    ui: MainUiState,
+    player: PlayerUiState,
+    library: LibraryPayload,
+    onQueryChange: (String, Boolean) -> Unit,
+    onPlayTrack: (Track) -> Unit,
+    onAddQueue: (Track) -> Unit,
+    onToggleFavorite: (Track) -> Unit,
+) {
+    val favIds = remember(library.favorites) { library.favorites.map { it.id }.toSet() }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(
+            text = "Buscar en YouTube Music",
+            color = NoctaliaColors.TextPrimary,
+            fontSize = 22.sp,
+            fontWeight = FontWeight.ExtraBold,
+        )
+
+        OutlinedTextField(
+            value = ui.searchQuery,
+            onValueChange = { onQueryChange(it, false) },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            shape = RoundedCornerShape(18.dp),
+            placeholder = {
+                Text("Canción, artista o álbum...", color = NoctaliaColors.TextDim, fontSize = 14.sp)
+            },
+            leadingIcon = {
+                Icon(Icons.Rounded.Search, contentDescription = null, tint = NoctaliaColors.CyanGlow)
+            },
+            trailingIcon = {
+                if (ui.searchQuery.isNotEmpty()) {
+                    IconButton(onClick = { onQueryChange("", true) }) {
+                        Icon(Icons.Rounded.Close, contentDescription = "Limpiar", tint = NoctaliaColors.TextMuted)
+                    }
+                }
+            },
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(onSearch = { onQueryChange(ui.searchQuery, true) }),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedContainerColor = Color(0x66000000),
+                unfocusedContainerColor = Color(0x55000000),
+                focusedBorderColor = NoctaliaColors.CyanGlow,
+                unfocusedBorderColor = NoctaliaColors.BorderCyan,
+                focusedTextColor = NoctaliaColors.TextPrimary,
+                unfocusedTextColor = NoctaliaColors.TextPrimary,
+                cursorColor = NoctaliaColors.CyanGlow,
+            ),
+        )
+
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(SEARCH_CHIPS) { (label, query) ->
+                NoctaliaPillChip(
+                    label = label,
+                    active = ui.searchQuery.equals(query, ignoreCase = true),
+                    onClick = { onQueryChange(query, true) },
+                )
+            }
+        }
+
+        if (ui.searching) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 28.dp),
+                horizontalArrangement = Arrangement.Center,
+            ) {
+                CircularProgressIndicator(color = NoctaliaColors.CyanGlow, strokeWidth = 2.5.dp)
+            }
+        } else {
+            val showingRecent = ui.searchQuery.isBlank()
+            val list = if (showingRecent) library.recent else ui.searchResults
+
+            Text(
+                text = when {
+                    showingRecent && list.isNotEmpty() -> "Escuchadas recientemente"
+                    showingRecent -> "Escribe cualquier canción o elige un género"
+                    list.isNotEmpty() -> "${list.size} resultados · Audio Opus sin anuncios"
+                    else -> "Sin resultados para «${ui.searchQuery}»"
+                },
+                color = NoctaliaColors.TextMuted,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+
+            LazyColumn(
+                modifier = Modifier.weight(1f),
+                contentPadding = PaddingValues(bottom = 164.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                items(list, key = { "sr_${it.id}" }) { track ->
+                    TrackRowItem(
+                        track = track,
+                        isCurrent = player.currentTrack?.id == track.id,
+                        isFavorite = track.id in favIds,
+                        onPlay = { onPlayTrack(track) },
+                        onAddQueue = { onAddQueue(track) },
+                        onToggleFavorite = { onToggleFavorite(track) },
+                    )
+                }
+            }
+        }
+    }
+}
