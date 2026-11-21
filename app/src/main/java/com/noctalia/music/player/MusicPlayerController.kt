@@ -490,6 +490,22 @@ class MusicPlayerController(
         _state.update { it.copy(queue = it.queue + clean) }
     }
 
+    fun addPlayNext(track: Track) {
+        val clean = SecurityValidators.sanitizeTrack(track) ?: return
+        _state.update { st ->
+            val filtered = st.queue.filterNot { it.id == clean.id }
+            st.copy(queue = listOf(clean) + filtered)
+        }
+    }
+
+    fun startRadioFromTrack(track: Track) {
+        val clean = SecurityValidators.sanitizeTrack(track) ?: return
+        radioJob?.cancel()
+        _state.update { it.copy(queue = emptyList()) }
+        playTrack(clean, pushHistory = true)
+        prefetchRadio(clean.id, playImmediately = false)
+    }
+
     fun playFromQueue(index: Int) {
         val curQueue = _state.value.queue
         if (index !in curQueue.indices) return

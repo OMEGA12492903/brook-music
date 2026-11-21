@@ -37,6 +37,7 @@ import com.noctalia.music.ui.MainUiState
 import com.noctalia.music.ui.components.NoctaliaGlassCard
 import com.noctalia.music.ui.components.NoctaliaPillChip
 import com.noctalia.music.ui.components.TrackCoverImage
+import com.noctalia.music.ui.components.TrackListShimmer
 import com.noctalia.music.ui.components.TrackRowItem
 import com.noctalia.music.ui.components.bouncyClick
 import com.noctalia.music.ui.theme.NoctaliaColors
@@ -59,6 +60,7 @@ fun HomeScreen(
     onPlayTrack: (Track) -> Unit,
     onAddQueue: (Track) -> Unit,
     onToggleFavorite: (Track) -> Unit,
+    onMoreTrackClick: (Track) -> Unit,
     onOpenLogin: () -> Unit,
     onOpenRemotePlaylist: (RemotePlaylist) -> Unit,
     onRetryHome: () -> Unit,
@@ -276,14 +278,7 @@ fun HomeScreen(
         val feedTracks = if (ui.accountHistory.isNotEmpty()) ui.accountHistory else ui.homeTracks
         if (ui.loadingHome && feedTracks.isEmpty()) {
             item {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 32.dp),
-                    horizontalArrangement = Arrangement.Center,
-                ) {
-                    CircularProgressIndicator(color = NoctaliaColors.CyanGlow, strokeWidth = 2.5.dp)
-                }
+                TrackListShimmer(count = 6)
             }
         } else if (feedTracks.isEmpty()) {
             item {
@@ -320,6 +315,7 @@ fun HomeScreen(
                     onPlay = { onPlayTrack(track) },
                     onAddQueue = { onAddQueue(track) },
                     onToggleFavorite = { onToggleFavorite(track) },
+                    onMoreClick = { onMoreTrackClick(track) },
                 )
             }
         }

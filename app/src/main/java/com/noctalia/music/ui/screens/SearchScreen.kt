@@ -36,6 +36,7 @@ import com.noctalia.music.data.Track
 import com.noctalia.music.player.PlayerUiState
 import com.noctalia.music.ui.MainUiState
 import com.noctalia.music.ui.components.NoctaliaPillChip
+import com.noctalia.music.ui.components.TrackListShimmer
 import com.noctalia.music.ui.components.TrackRowItem
 import com.noctalia.music.ui.theme.NoctaliaColors
 
@@ -58,6 +59,7 @@ fun SearchScreen(
     onPlayTrack: (Track) -> Unit,
     onAddQueue: (Track) -> Unit,
     onToggleFavorite: (Track) -> Unit,
+    onMoreTrackClick: (Track) -> Unit,
 ) {
     val favIds = remember(library.favorites) { library.favorites.map { it.id }.toSet() }
 
@@ -132,14 +134,7 @@ fun SearchScreen(
         }
 
         if (ui.searching) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 28.dp),
-                horizontalArrangement = Arrangement.Center,
-            ) {
-                CircularProgressIndicator(color = NoctaliaColors.CyanGlow, strokeWidth = 2.5.dp)
-            }
+            TrackListShimmer(count = 6, modifier = Modifier.padding(top = 6.dp))
         } else {
             val showingRecent = ui.searchQuery.isBlank()
             val list = if (showingRecent) library.recent else ui.searchResults
@@ -169,6 +164,7 @@ fun SearchScreen(
                         onPlay = { onPlayTrack(track) },
                         onAddQueue = { onAddQueue(track) },
                         onToggleFavorite = { onToggleFavorite(track) },
+                        onMoreClick = { onMoreTrackClick(track) },
                     )
                 }
             }

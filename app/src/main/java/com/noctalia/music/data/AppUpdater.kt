@@ -232,6 +232,14 @@ class AppUpdater(private val context: Context) {
             } ?: return false
 
             if (archiveInfo.packageName != context.packageName) return false
+            // Prevenir ataques de downgrade: no permitir instalar un versionCode inferior al instalado
+            val archiveVerCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                archiveInfo.longVersionCode
+            } else {
+                archiveInfo.versionCode.toLong()
+            }
+            if (archiveVerCode < BuildConfig.VERSION_CODE.toLong()) return false
+
             val archiveDigests = getCertSha256Set(archiveInfo)
             archiveDigests.isNotEmpty() && archiveDigests == installedDigests
         } catch (_: Exception) {

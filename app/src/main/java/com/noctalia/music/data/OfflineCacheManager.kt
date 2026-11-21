@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import okhttp3.Request
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 
 data class OfflineState(
     val cachedIds: Set<String> = emptySet(),
@@ -25,6 +26,7 @@ class OfflineCacheManager(
     private val api: YTMusicApi,
 ) {
     private val dir = File(context.filesDir, "offline_audio").apply { mkdirs() }
+    private val inFlightIds = ConcurrentHashMap.newKeySet<String>()
 
     private val _state = MutableStateFlow(scanDisk(emptySet()))
     val state: StateFlow<OfflineState> = _state.asStateFlow()
@@ -48,8 +50,10 @@ class OfflineCacheManager(
         val vid = track.id
         if (!SecurityValidators.isValidVideoId(vid)) return@withContext false
         if (isCached(vid)) return@withContext true
+        // Evitar condición de carrera si se pulsa descargar dos veces sobre la misma canción
+        if (!inFlightIds.add(vid)) return@withContext false
 
-        _state.value = _state.value.copy(downloadingIds = _state.value.downloadingIds + vid)
+        _state.value = scanDisk(inFlightIds.toSet())
         val target = File(dir, "$vid.audio")
         val tmp = File(dir, "$vid.tmp")
         try {
@@ -98,8 +102,8 @@ class OfflineCacheManager(
             tmp.delete()
             false
         } finally {
-            val remainingDl = _state.value.downloadingIds - vid
-            _state.value = scanDisk(remainingDl)
+            inFlightIds.remove(vid)
+            _state.value = scanDisk(inFlightIds.toSet())
         }
     }
 

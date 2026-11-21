@@ -34,6 +34,9 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import coil.imageLoader
 import coil.request.ImageRequest
 import coil.request.SuccessResult
@@ -76,7 +79,7 @@ private data class BgParticle(
     val colorIdx: Int,
 )
 
-private object AlbumColorCache {
+internal object AlbumColorCache {
     private val cache = ConcurrentHashMap<String, ExtractedAlbumArt>()
 
     val noctaliaFallback = ExtractedAlbumArt(
@@ -119,9 +122,17 @@ private object AlbumColorCache {
     }
 
     private fun sampleBitmap(src: Bitmap): ExtractedAlbumArt {
-        val scaled = Bitmap.createScaledBitmap(src, 40, 40, true)
+        if (src.isRecycled) return noctaliaFallback
+        val safeSrc = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O &&
+            src.config == Bitmap.Config.HARDWARE
+        ) {
+            src.copy(Bitmap.Config.ARGB_8888, false) ?: return noctaliaFallback
+        } else {
+            src
+        }
+        val scaled = Bitmap.createScaledBitmap(safeSrc, 40, 40, true)
         // Mini-bitmap 16x16 reescalado con FilterQuality.High produce un desenfoque fluido GPU en API 26-35
-        val softRaw = Bitmap.createScaledBitmap(src, 16, 16, true)
+        val softRaw = Bitmap.createScaledBitmap(safeSrc, 16, 16, true)
         val softImg = try {
             softRaw.asImageBitmap()
         } catch (_: Throwable) {
@@ -213,7 +224,8 @@ private object AlbumColorCache {
             alpha = 1f,
         )
 
-        if (scaled != src) scaled.recycle()
+        if (scaled != safeSrc) scaled.recycle()
+        if (safeSrc != src) safeSrc.recycle()
         return ExtractedAlbumArt(colors = picked, baseColor = base, softBitmap = softImg)
     }
 
@@ -267,23 +279,26 @@ fun BrookAnimatedPlayerBackground(
     val c4 by animateColorAsState(activePalette.getOrElse(4) { NoctaliaColors.Pink }, colorSpec, label = "bg_c4")
     val baseColor by animateColorAsState(targetBase, colorSpec, label = "bg_base")
 
-    // Reloj continuo con aceleración/desaceleración suave entre Play (1.0x) y Pausa (0.16x)
+    // Reloj continuo con aceleración/desaceleración suave; se detiene a 0% GPU cuando la app va a segundo plano
     var animTime by remember { mutableFloatStateOf(0f) }
     var playingState by remember { mutableStateOf(isPlaying) }
     playingState = isPlaying
+    val lifecycleOwner = LocalLifecycleOwner.current
 
-    LaunchedEffect(Unit) {
-        var lastNanos = 0L
-        var speedFactor = if (playingState) 1f else 0.18f
-        while (true) {
-            withFrameNanos { frameNanos ->
-                if (lastNanos != 0L) {
-                    val dt = ((frameNanos - lastNanos) / 1_000_000_000f).coerceIn(0f, 0.05f)
-                    val targetSpeed = if (playingState) 1.05f else 0.16f
-                    speedFactor += (targetSpeed - speedFactor) * (dt * 3.8f).coerceAtMost(1f)
-                    animTime += dt * speedFactor
+    LaunchedEffect(lifecycleOwner) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            var lastNanos = 0L
+            var speedFactor = if (playingState) 1f else 0.18f
+            while (true) {
+                withFrameNanos { frameNanos ->
+                    if (lastNanos != 0L) {
+                        val dt = ((frameNanos - lastNanos) / 1_000_000_000f).coerceIn(0f, 0.05f)
+                        val targetSpeed = if (playingState) 1.05f else 0.16f
+                        speedFactor += (targetSpeed - speedFactor) * (dt * 3.8f).coerceAtMost(1f)
+                        animTime += dt * speedFactor
+                    }
+                    lastNanos = frameNanos
                 }
-                lastNanos = frameNanos
             }
         }
     }

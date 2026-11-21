@@ -163,6 +163,8 @@ fun YouTubeLoginDialog(
                         settings.domStorageEnabled = true
                         settings.allowFileAccess = false
                         settings.allowContentAccess = false
+                        settings.setGeolocationEnabled(false)
+                        settings.databaseEnabled = false
                         settings.setSupportMultipleWindows(false)
                         settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
                         settings.cacheMode = WebSettings.LOAD_NO_CACHE
@@ -183,7 +185,15 @@ fun YouTubeLoginDialog(
                             override fun onPageFinished(view: WebView?, url: String?) {
                                 super.onPageFinished(view, url)
                                 if (captured || url == null) return
-                                if (url.startsWith("https://music.youtube.com")) {
+                                val parsed = try {
+                                    java.net.URI(url)
+                                } catch (_: Exception) {
+                                    null
+                                }
+                                val isYtMusic = parsed != null &&
+                                    parsed.scheme.equals("https", ignoreCase = true) &&
+                                    parsed.host.equals("music.youtube.com", ignoreCase = true)
+                                if (isYtMusic) {
                                     val rawCookie = CookieManager.getInstance().getCookie("https://music.youtube.com") ?: ""
                                     val clean = AuthStore.sanitizeCookieHeader(rawCookie)
                                     if (clean != null) {

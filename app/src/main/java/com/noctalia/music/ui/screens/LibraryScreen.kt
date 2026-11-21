@@ -81,6 +81,7 @@ fun LibraryScreen(
     onPlayTrackList: (List<Track>, Int) -> Unit,
     onAddQueue: (Track) -> Unit,
     onToggleFavorite: (Track) -> Unit,
+    onMoreTrackClick: (Track) -> Unit,
     onCacheTracksOffline: (List<Track>, String) -> Unit,
     onClearOfflineCache: () -> Unit,
     onCreatePlaylist: (String) -> Unit,
@@ -183,6 +184,7 @@ fun LibraryScreen(
                             onPlay = { onPlayTrack(track) },
                             onAddQueue = { onAddQueue(track) },
                             onToggleFavorite = { onToggleFavorite(track) },
+                            onMoreClick = { onMoreTrackClick(track) },
                         )
                     }
                 }
@@ -315,6 +317,7 @@ fun LibraryScreen(
                                 onPlay = { onPlayTrack(track) },
                                 onAddQueue = { onAddQueue(track) },
                                 onToggleFavorite = { onToggleFavorite(track) },
+                                onMoreClick = { onMoreTrackClick(track) },
                             )
                         }
                     }

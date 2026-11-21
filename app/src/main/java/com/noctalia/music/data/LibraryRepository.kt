@@ -55,11 +55,13 @@ class LibraryRepository(context: Context) {
             .mapNotNull { SecurityValidators.sanitizeTrack(it) }
             .distinctBy { it.id }
             .take(30)
+        val validBgStyle = if (raw.settings.bgStyle in ALLOWED_BG_STYLES) raw.settings.bgStyle else "liquid"
+        val validLoop = if (raw.settings.loopStatus in ALLOWED_LOOP_STATUS) raw.settings.loopStatus else "None"
         return LibraryPayload(
             favorites = favs,
             playlists = if (pls.isEmpty()) mapOf("Gaming" to emptyList(), "Chill" to emptyList()) else pls,
             recent = rec,
-            settings = raw.settings,
+            settings = raw.settings.copy(bgStyle = validBgStyle, loopStatus = validLoop),
         )
     }
 
@@ -89,6 +91,8 @@ class LibraryRepository(context: Context) {
         private const val MAX_FAVORITES = 2000
         private const val MAX_PLAYLISTS = 60
         private const val MAX_TRACKS_PER_PLAYLIST = 1000
+        private val ALLOWED_BG_STYLES = setOf("liquid", "vortex", "aurora", "particles")
+        private val ALLOWED_LOOP_STATUS = setOf("None", "Track", "Playlist")
     }
 
     fun isFavorite(videoId: String): Boolean = _state.value.favorites.any { it.id == videoId }

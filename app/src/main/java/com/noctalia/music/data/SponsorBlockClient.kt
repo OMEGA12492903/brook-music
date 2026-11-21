@@ -84,7 +84,9 @@ class SponsorBlockClient {
                     val startS = (seg.getOrNull(0) as? JsonPrimitive)?.doubleOrNull ?: return@mapNotNull null
                     val endS = (seg.getOrNull(1) as? JsonPrimitive)?.doubleOrNull ?: return@mapNotNull null
                     val cat = (o["category"] as? JsonPrimitive)?.contentOrNull ?: "skip"
-                    if (endS - startS < 1.5) return@mapNotNull null
+                    if (!startS.isFinite() || !endS.isFinite() || startS < 0.0 || endS > 86_400.0 || endS - startS < 1.5) {
+                        return@mapNotNull null
+                    }
                     SkipSegment((startS * 1000.0).toLong(), (endS * 1000.0).toLong(), cat)
                 }.sortedBy { it.startMs }
             }

@@ -46,8 +46,6 @@ import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.Icon
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -68,11 +66,15 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.noctalia.music.data.Track
 import com.noctalia.music.ui.NoctaliaViewModel
 import com.noctalia.music.ui.components.NoctaliaBackground
 import com.noctalia.music.ui.components.NoctaliaGlassCard
+import com.noctalia.music.ui.components.NoctaliaGlassToast
 import com.noctalia.music.ui.components.PlayerBgStyle
+import com.noctalia.music.ui.components.TrackActionsBottomSheet
 import com.noctalia.music.ui.components.bouncyClick
+import kotlinx.coroutines.delay
 import com.noctalia.music.ui.screens.FullPlayerOverlay
 import com.noctalia.music.ui.screens.HomeScreen
 import com.noctalia.music.ui.screens.LibraryScreen
@@ -110,7 +112,7 @@ private fun NoctaliaRootScreen(vm: NoctaliaViewModel = viewModel()) {
     var libraryInitialTab by remember { mutableStateOf("favs") }
     var fullPlayerOpen by remember { mutableStateOf(false) }
     var showLoginDialog by remember { mutableStateOf(false) }
-    val snackbarHostState = remember { SnackbarHostState() }
+    var actionSheetTrack by remember { mutableStateOf<Track?>(null) }
 
     // Pedir permiso de notificaciones multimedia en Android 13+ para mostrar controles en bloqueo
     val notifPermLauncher = rememberLauncherForActivityResult(
@@ -130,9 +132,10 @@ private fun NoctaliaRootScreen(vm: NoctaliaViewModel = viewModel()) {
     }
 
     LaunchedEffect(ui.statusMessage) {
-        val msg = ui.statusMessage ?: return@LaunchedEffect
-        snackbarHostState.showSnackbar(msg)
-        vm.clearStatusMessage()
+        if (ui.statusMessage != null) {
+            delay(2400L)
+            vm.clearStatusMessage()
+        }
     }
 
     // Exportar / Importar music_library.json compatible con Noctalia PC
@@ -224,6 +227,7 @@ private fun NoctaliaRootScreen(vm: NoctaliaViewModel = viewModel()) {
                         vm.showMessage("Añadida «${it.title}» a la cola")
                     },
                     onToggleFavorite = { vm.library.toggleFavorite(it) },
+                    onMoreTrackClick = { actionSheetTrack = it },
                     onOpenLogin = {
                         if (ui.isLoggedIn) {
                             libraryInitialTab = "account"
@@ -252,6 +256,7 @@ private fun NoctaliaRootScreen(vm: NoctaliaViewModel = viewModel()) {
                         vm.showMessage("Añadida «${it.title}» a la cola")
                     },
                     onToggleFavorite = { vm.library.toggleFavorite(it) },
+                    onMoreTrackClick = { actionSheetTrack = it },
                 )
 
                 "library" -> LibraryScreen(
@@ -268,6 +273,7 @@ private fun NoctaliaRootScreen(vm: NoctaliaViewModel = viewModel()) {
                         vm.showMessage("Añadida «${it.title}» a la cola")
                     },
                     onToggleFavorite = { vm.library.toggleFavorite(it) },
+                    onMoreTrackClick = { actionSheetTrack = it },
                     onCacheTracksOffline = { list, lbl -> vm.cacheTrackListOffline(list, lbl) },
                     onClearOfflineCache = { vm.clearOfflineCache() },
                     onCreatePlaylist = { vm.library.createPlaylist(it) },
@@ -297,14 +303,6 @@ private fun NoctaliaRootScreen(vm: NoctaliaViewModel = viewModel()) {
             }
             }
 
-            // Snackbar flotante
-            SnackbarHost(
-                hostState = snackbarHostState,
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = 8.dp, start = 16.dp, end = 16.dp),
-            )
-
             // Mini reproductor (entra animado al poner una canción) + Dock inferior flotante estilo Noctalia
             Box(
                 modifier = Modifier
@@ -327,8 +325,11 @@ private fun NoctaliaRootScreen(vm: NoctaliaViewModel = viewModel()) {
                     ) {
                         MiniPlayerBar(
                             player = player,
+                            useCoverColors = library.settings.bgUseCoverColors,
                             onExpand = { fullPlayerOpen = true },
                             onPlayPause = { vm.player.togglePlayPause() },
+                            onNext = { vm.player.skipNext() },
+                            onPrev = { vm.player.skipPrevious() },
                         )
                     }
 
@@ -416,6 +417,15 @@ private fun NoctaliaRootScreen(vm: NoctaliaViewModel = viewModel()) {
             )
         }
 
+        // Toast flotante de cristal Noctalia (siempre visible incluso sobre el reproductor grande)
+        NoctaliaGlassToast(
+            message = ui.statusMessage,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .statusBarsPadding()
+                .padding(top = 10.dp, start = 18.dp, end = 18.dp),
+        )
+
         // Diálogo seguro de inicio de sesión de YouTube Music
         if (showLoginDialog) {
             YouTubeLoginDialog(
@@ -423,6 +433,48 @@ private fun NoctaliaRootScreen(vm: NoctaliaViewModel = viewModel()) {
                 onLoginSuccess = { cookie ->
                     showLoginDialog = false
                     vm.onYouTubeLoginSuccess(cookie)
+                },
+            )
+        }
+
+        // Menú deslizable de acciones rápidas sobre cualquier canción
+        val sheetTrack = actionSheetTrack
+        if (sheetTrack != null) {
+            TrackActionsBottomSheet(
+                track = sheetTrack,
+                isFavorite = sheetTrack.id in favIds,
+                isOfflineCached = sheetTrack.id in offline.cachedIds,
+                isOfflineDownloading = sheetTrack.id in offline.downloadingIds,
+                playlistNames = library.playlists.keys.toList(),
+                onDismiss = { actionSheetTrack = null },
+                onPlayNext = {
+                    vm.player.addPlayNext(sheetTrack)
+                    vm.showMessage("Sonará a continuación: «${sheetTrack.title}»")
+                },
+                onAddQueue = {
+                    vm.player.addToQueue(sheetTrack)
+                    vm.showMessage("Añadida «${sheetTrack.title}» a la cola")
+                },
+                onAddToPlaylist = { plName ->
+                    vm.library.addTrackToPlaylist(plName, sheetTrack)
+                    vm.showMessage("Guardada en «$plName»")
+                },
+                onToggleOffline = { vm.toggleOfflineTrack(sheetTrack) },
+                onStartRadio = {
+                    vm.player.startRadioFromTrack(sheetTrack)
+                    vm.showMessage("Radio iniciada desde «${sheetTrack.title}»")
+                },
+                onOpenArtist = {
+                    currentNav = "search"
+                    vm.onSearchQueryChanged(
+                        sheetTrack.artist.substringBefore(",").trim(),
+                        immediate = true,
+                        mode = "artist",
+                    )
+                },
+                onToggleFavorite = {
+                    val added = vm.library.toggleFavorite(sheetTrack)
+                    vm.showMessage(if (added) "Añadida a Favoritas" else "Quitada de Favoritas")
                 },
             )
         }

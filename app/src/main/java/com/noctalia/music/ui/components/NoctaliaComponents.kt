@@ -16,6 +16,8 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -34,21 +36,37 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
+import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.DownloadDone
+import androidx.compose.material.icons.rounded.DownloadForOffline
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
+import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.MusicNote
+import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material.icons.rounded.Radio
+import androidx.compose.material.icons.rounded.SkipNext
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -323,6 +341,7 @@ fun TrackRowItem(
     onAddQueue: (() -> Unit)? = null,
     onToggleFavorite: (() -> Unit)? = null,
     onRemove: (() -> Unit)? = null,
+    onMoreClick: (() -> Unit)? = null,
     indexBadge: String? = null,
 ) {
     val titleColor by animateColorAsState(
@@ -338,110 +357,520 @@ fun TrackRowItem(
         label = "row_fav_scale",
     )
 
-    NoctaliaGlassCard(
-        cornerRadius = 16.dp,
-        highlighted = isCurrent,
+    // Gesto de deslizar hacia la derecha para añadir a la cola (estilo Spotify)
+    var dragRaw by remember { mutableFloatStateOf(0f) }
+    var isDragging by remember { mutableStateOf(false) }
+    val swipeOffset by animateFloatAsState(
+        targetValue = if (isDragging) dragRaw else 0f,
+        animationSpec = spring(dampingRatio = 0.68f, stiffness = 420f),
+        label = "row_swipe_x",
+    )
+
+    val swipeModifier = if (onAddQueue != null) {
+        Modifier.pointerInput(track.id) {
+            detectHorizontalDragGestures(
+                onDragStart = {
+                    isDragging = true
+                    dragRaw = 0f
+                },
+                onHorizontalDrag = { _, dragAmount ->
+                    dragRaw = (dragRaw + dragAmount).coerceIn(0f, 190f)
+                },
+                onDragEnd = {
+                    val triggered = dragRaw > 110f
+                    isDragging = false
+                    dragRaw = 0f
+                    if (triggered) onAddQueue()
+                },
+                onDragCancel = {
+                    isDragging = false
+                    dragRaw = 0f
+                },
+            )
+        }
+    } else {
+        Modifier
+    }
+
+    Box(
         modifier = Modifier
             .fillMaxWidth()
-            .bouncyClick(pressedScale = 0.975f, onClick = onPlay),
+            .clip(RoundedCornerShape(16.dp)),
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            if (indexBadge != null) {
+        if (onAddQueue != null && swipeOffset > 2f) {
+            Row(
+                modifier = Modifier
+                    .matchParentSize()
+                    .background(
+                        Brush.horizontalGradient(
+                            listOf(
+                                NoctaliaColors.Cyan.copy(alpha = 0.45f),
+                                NoctaliaColors.Cyan.copy(alpha = 0.08f),
+                            )
+                        )
+                    )
+                    .padding(horizontal = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Rounded.QueueMusic,
+                    contentDescription = null,
+                    tint = NoctaliaColors.CyanGlow,
+                    modifier = Modifier.size(18.dp),
+                )
                 Text(
-                    text = indexBadge,
-                    color = NoctaliaColors.Cyan,
+                    text = if (swipeOffset > 110f) "Soltar para encolar" else "Añadir a la cola",
+                    color = NoctaliaColors.CyanGlow,
                     fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.width(22.dp),
+                    fontWeight = FontWeight.ExtraBold,
                 )
             }
-            Box(contentAlignment = Alignment.Center) {
-                TrackCoverImage(url = track.thumb, size = 48.dp, cornerRadius = 11.dp)
-                androidx.compose.animation.AnimatedVisibility(
-                    visible = isCurrent,
-                    enter = fadeIn(tween(200)) + scaleIn(initialScale = 0.7f),
-                    exit = fadeOut(tween(180)) + scaleOut(targetScale = 0.7f),
+        }
+
+        NoctaliaGlassCard(
+            cornerRadius = 16.dp,
+            highlighted = isCurrent,
+            modifier = Modifier
+                .fillMaxWidth()
+                .graphicsLayer { translationX = swipeOffset }
+                .then(swipeModifier)
+                .bouncyClick(pressedScale = 0.975f, onClick = onPlay),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (indexBadge != null) {
+                    Text(
+                        text = indexBadge,
+                        color = NoctaliaColors.Cyan,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.width(22.dp),
+                    )
+                }
+                Box(contentAlignment = Alignment.Center) {
+                    TrackCoverImage(url = track.thumb, size = 48.dp, cornerRadius = 11.dp)
+                    androidx.compose.animation.AnimatedVisibility(
+                        visible = isCurrent,
+                        enter = fadeIn(tween(200)) + scaleIn(initialScale = 0.7f),
+                        exit = fadeOut(tween(180)) + scaleOut(targetScale = 0.7f),
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(48.dp)
+                                .clip(RoundedCornerShape(11.dp))
+                                .background(Color.Black.copy(alpha = 0.52f)),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            NoctaliaMiniEqualizer(isPlaying = true)
+                        }
+                    }
+                }
+                Spacer(Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = track.title,
+                        color = titleColor,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    val dur = track.durationText.ifBlank {
+                        if (track.duration > 0) SecurityValidators.fmtDuration(track.duration) else ""
+                    }
+                    val sub = if (dur.isNotEmpty()) "${track.artist} · $dur" else track.artist
+                    Text(
+                        text = sub,
+                        color = NoctaliaColors.TextMuted,
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                if (onToggleFavorite != null) {
+                    IconButton(
+                        onClick = {
+                            favPulse = true
+                            onToggleFavorite()
+                        },
+                        modifier = Modifier.size(34.dp),
+                    ) {
+                        Icon(
+                            imageVector = if (isFavorite) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                            contentDescription = "Favorita",
+                            tint = if (isFavorite) NoctaliaColors.CyanGlow else NoctaliaColors.TextDim,
+                            modifier = Modifier
+                                .size(19.dp)
+                                .graphicsLayer {
+                                    scaleX = favScale
+                                    scaleY = favScale
+                                },
+                        )
+                    }
+                }
+                if (onMoreClick != null) {
+                    IconButton(onClick = onMoreClick, modifier = Modifier.size(34.dp)) {
+                        Icon(
+                            imageVector = Icons.Rounded.MoreVert,
+                            contentDescription = "Más opciones",
+                            tint = NoctaliaColors.TextPrimary,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                } else if (onAddQueue != null) {
+                    IconButton(onClick = onAddQueue, modifier = Modifier.size(34.dp)) {
+                        Icon(
+                            imageVector = Icons.Rounded.Add,
+                            contentDescription = "Añadir a la cola",
+                            tint = NoctaliaColors.TextPrimary,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                }
+                if (onRemove != null) {
+                    IconButton(onClick = onRemove, modifier = Modifier.size(34.dp)) {
+                        Icon(
+                            imageVector = Icons.Rounded.Close,
+                            contentDescription = "Quitar",
+                            tint = NoctaliaColors.Danger,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Toast flotante estilo cristal ahumado Noctalia (sustituye al Snackbar gris genérico).
+ */
+@Composable
+fun NoctaliaGlassToast(
+    message: String?,
+    modifier: Modifier = Modifier,
+) {
+    AnimatedVisibility(
+        visible = !message.isNullOrBlank(),
+        enter = slideInVertically(spring(dampingRatio = 0.72f, stiffness = 420f)) { -it } + fadeIn(tween(180)),
+        exit = slideOutVertically(tween(200)) { -it } + fadeOut(tween(160)),
+        modifier = modifier,
+    ) {
+        NoctaliaGlassCard(
+            cornerRadius = 99.dp,
+            strong = true,
+            highlighted = true,
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(22.dp)
+                        .clip(CircleShape)
+                        .background(NoctaliaColors.Cyan.copy(alpha = 0.22f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Check,
+                        contentDescription = null,
+                        tint = NoctaliaColors.CyanGlow,
+                        modifier = Modifier.size(14.dp),
+                    )
+                }
+                Text(
+                    text = message.orEmpty(),
+                    color = NoctaliaColors.TextPrimary,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Placeholders animados tipo Skeleton Shimmer para carga de listas de canciones.
+ */
+@Composable
+fun TrackListShimmer(
+    count: Int = 6,
+    modifier: Modifier = Modifier,
+) {
+    val infinite = rememberInfiniteTransition(label = "shimmer_tr")
+    val shift by infinite.animateFloat(
+        initialValue = -1f,
+        targetValue = 2f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1250, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "shimmer_shift",
+    )
+    val shimmerBrush = Brush.linearGradient(
+        colors = listOf(
+            Color.White.copy(alpha = 0.05f),
+            NoctaliaColors.CyanGlow.copy(alpha = 0.16f),
+            Color.White.copy(alpha = 0.05f),
+        ),
+        start = Offset(shift * 420f, 0f),
+        end = Offset(shift * 420f + 260f, 120f),
+    )
+
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        repeat(count) { idx ->
+            NoctaliaGlassCard(cornerRadius = 16.dp, modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Box(
                         modifier = Modifier
                             .size(48.dp)
                             .clip(RoundedCornerShape(11.dp))
-                            .background(Color.Black.copy(alpha = 0.52f)),
-                        contentAlignment = Alignment.Center,
+                            .background(shimmerBrush),
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        NoctaliaMiniEqualizer(isPlaying = true)
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth(if (idx % 2 == 0) 0.68f else 0.54f)
+                                .height(13.dp)
+                                .clip(RoundedCornerShape(99.dp))
+                                .background(shimmerBrush),
+                        )
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth(if (idx % 2 == 0) 0.42f else 0.36f)
+                                .height(10.dp)
+                                .clip(RoundedCornerShape(99.dp))
+                                .background(shimmerBrush),
+                        )
                     }
                 }
             }
-            Spacer(Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = track.title,
-                    color = titleColor,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                val dur = track.durationText.ifBlank {
-                    if (track.duration > 0) SecurityValidators.fmtDuration(track.duration) else ""
-                }
-                val sub = if (dur.isNotEmpty()) "${track.artist} · $dur" else track.artist
-                Text(
-                    text = sub,
-                    color = NoctaliaColors.TextMuted,
-                    fontSize = 12.sp,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            if (onAddQueue != null) {
-                IconButton(onClick = onAddQueue, modifier = Modifier.size(34.dp)) {
-                    Icon(
-                        imageVector = Icons.Rounded.Add,
-                        contentDescription = "Añadir a la cola",
-                        tint = NoctaliaColors.TextPrimary,
-                        modifier = Modifier.size(20.dp),
-                    )
-                }
-            }
-            if (onToggleFavorite != null) {
-                IconButton(
-                    onClick = {
-                        favPulse = true
-                        onToggleFavorite()
-                    },
-                    modifier = Modifier.size(34.dp),
-                ) {
-                    Icon(
-                        imageVector = if (isFavorite) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
-                        contentDescription = "Favorita",
-                        tint = if (isFavorite) NoctaliaColors.CyanGlow else NoctaliaColors.TextDim,
-                        modifier = Modifier
-                            .size(19.dp)
-                            .graphicsLayer {
-                                scaleX = favScale
-                                scaleY = favScale
-                            },
-                    )
-                }
-            }
-            if (onRemove != null) {
-                IconButton(onClick = onRemove, modifier = Modifier.size(34.dp)) {
-                    Icon(
-                        imageVector = Icons.Rounded.Close,
-                        contentDescription = "Quitar",
-                        tint = NoctaliaColors.Danger,
-                        modifier = Modifier.size(18.dp),
-                    )
-                }
-            }
         }
+    }
+}
+
+/**
+ * Menú deslizable (Bottom Sheet) de acciones rápidas para cualquier canción.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun TrackActionsBottomSheet(
+    track: Track,
+    isFavorite: Boolean,
+    isOfflineCached: Boolean,
+    isOfflineDownloading: Boolean,
+    playlistNames: List<String>,
+    onDismiss: () -> Unit,
+    onPlayNext: () -> Unit,
+    onAddQueue: () -> Unit,
+    onAddToPlaylist: (String) -> Unit,
+    onToggleOffline: () -> Unit,
+    onStartRadio: () -> Unit,
+    onOpenArtist: () -> Unit,
+    onToggleFavorite: () -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var showPlaylists by remember { mutableStateOf(false) }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = Color(0xF50A141E),
+        contentColor = NoctaliaColors.TextPrimary,
+        scrimColor = Color(0xAA02060B),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(horizontal = 18.dp)
+                .padding(bottom = 18.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            // Cabecera de la canción
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TrackCoverImage(url = track.thumb, size = 50.dp, cornerRadius = 12.dp)
+                Spacer(Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = track.title,
+                        color = NoctaliaColors.TextPrimary,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = track.artist,
+                        color = NoctaliaColors.Cyan,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+
+            HorizontalDivider(color = NoctaliaColors.BorderCyan.copy(alpha = 0.45f))
+            Spacer(Modifier.height(4.dp))
+
+            SheetActionItem(
+                icon = Icons.Rounded.SkipNext,
+                tint = NoctaliaColors.CyanGlow,
+                label = "Reproducir a continuación",
+                onClick = {
+                    onPlayNext()
+                    onDismiss()
+                },
+            )
+            SheetActionItem(
+                icon = Icons.AutoMirrored.Rounded.QueueMusic,
+                tint = NoctaliaColors.Cyan,
+                label = "Añadir a la cola",
+                onClick = {
+                    onAddQueue()
+                    onDismiss()
+                },
+            )
+            SheetActionItem(
+                icon = Icons.AutoMirrored.Rounded.PlaylistAdd,
+                tint = NoctaliaColors.Magenta,
+                label = if (showPlaylists) "Elige una playlist:" else "Añadir a una playlist...",
+                onClick = { showPlaylists = !showPlaylists },
+            )
+
+            AnimatedVisibility(visible = showPlaylists) {
+                if (playlistNames.isEmpty()) {
+                    Text(
+                        text = "Crea una playlist primero en la pestaña Listas.",
+                        color = NoctaliaColors.TextMuted,
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(start = 46.dp, bottom = 8.dp),
+                    )
+                } else {
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.padding(start = 42.dp, top = 4.dp, bottom = 8.dp),
+                    ) {
+                        items(playlistNames) { plName ->
+                            NoctaliaPillChip(
+                                label = plName,
+                                active = false,
+                                onClick = {
+                                    onAddToPlaylist(plName)
+                                    onDismiss()
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+
+            SheetActionItem(
+                icon = if (isOfflineCached) Icons.Rounded.DownloadDone else Icons.Rounded.DownloadForOffline,
+                tint = if (isOfflineCached) NoctaliaColors.CyanGlow else NoctaliaColors.TextPrimary,
+                label = when {
+                    isOfflineDownloading -> "Descargando sin conexión..."
+                    isOfflineCached -> "Quitar de descargas sin conexión"
+                    else -> "Descargar para modo sin conexión"
+                },
+                onClick = {
+                    if (!isOfflineDownloading) {
+                        onToggleOffline()
+                        onDismiss()
+                    }
+                },
+            )
+            SheetActionItem(
+                icon = Icons.Rounded.Radio,
+                tint = Color(0xFFB388FF),
+                label = "Iniciar Radio similar",
+                onClick = {
+                    onStartRadio()
+                    onDismiss()
+                },
+            )
+            SheetActionItem(
+                icon = Icons.Rounded.Person,
+                tint = NoctaliaColors.TextPrimary,
+                label = "Ver canciones de ${track.artist.substringBefore(",").trim()}",
+                onClick = {
+                    onOpenArtist()
+                    onDismiss()
+                },
+            )
+            SheetActionItem(
+                icon = if (isFavorite) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                tint = if (isFavorite) NoctaliaColors.CyanGlow else NoctaliaColors.TextMuted,
+                label = if (isFavorite) "Quitar de Favoritas" else "Añadir a Favoritas",
+                onClick = {
+                    onToggleFavorite()
+                    onDismiss()
+                },
+            )
+        }
+    }
+}
+
+@Composable
+private fun SheetActionItem(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    tint: Color,
+    label: String,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .bouncyClick(pressedScale = 0.97f, onClick = onClick)
+            .padding(horizontal = 8.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(34.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(tint.copy(alpha = 0.16f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(imageVector = icon, contentDescription = null, tint = tint, modifier = Modifier.size(19.dp))
+        }
+        Text(
+            text = label,
+            color = NoctaliaColors.TextPrimary,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 

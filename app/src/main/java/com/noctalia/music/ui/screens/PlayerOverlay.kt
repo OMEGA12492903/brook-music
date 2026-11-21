@@ -25,9 +25,12 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -54,11 +57,15 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.QueueMusic
+import androidx.compose.material.icons.rounded.Bedtime
 import androidx.compose.material.icons.rounded.DownloadDone
 import androidx.compose.material.icons.rounded.DownloadForOffline
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
+import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Repeat
@@ -89,7 +96,9 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -101,6 +110,7 @@ import com.noctalia.music.player.AudioFxState
 import com.noctalia.music.player.EqPreset
 import com.noctalia.music.player.PlayerUiState
 import com.noctalia.music.player.RepeatMode
+import com.noctalia.music.ui.components.AlbumColorCache
 import com.noctalia.music.ui.components.BrookAnimatedPlayerBackground
 import com.noctalia.music.ui.components.NoctaliaGlassCard
 import com.noctalia.music.ui.components.NoctaliaMiniEqualizer
@@ -111,40 +121,109 @@ import com.noctalia.music.ui.components.TrackCoverImage
 import com.noctalia.music.ui.components.TrackRowItem
 import com.noctalia.music.ui.components.bouncyClick
 import com.noctalia.music.ui.theme.NoctaliaColors
+import kotlin.math.abs
 
 @Composable
 fun MiniPlayerBar(
     player: PlayerUiState,
+    useCoverColors: Boolean,
     onExpand: () -> Unit,
     onPlayPause: () -> Unit,
+    onNext: () -> Unit,
+    onPrev: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val track = player.currentTrack ?: return
+    val context = LocalContext.current
+    var artData by remember { mutableStateOf(AlbumColorCache.noctaliaFallback) }
+    LaunchedEffect(track.thumb) {
+        artData = AlbumColorCache.extract(context, track.thumb)
+    }
+
+    val dominantRaw = if (useCoverColors) {
+        artData.colors.firstOrNull() ?: NoctaliaColors.Cyan
+    } else {
+        NoctaliaColors.Cyan
+    }
+    val tintBgStart by animateColorAsState(
+        targetValue = Color(
+            red = dominantRaw.red * 0.42f + 0.04f,
+            green = dominantRaw.green * 0.42f + 0.06f,
+            blue = dominantRaw.blue * 0.42f + 0.08f,
+            alpha = 0.90f,
+        ),
+        animationSpec = tween(550, easing = FastOutSlowInEasing),
+        label = "mini_tint_start",
+    )
+    val tintBgEnd by animateColorAsState(
+        targetValue = Color(
+            red = dominantRaw.red * 0.14f + 0.03f,
+            green = dominantRaw.green * 0.14f + 0.05f,
+            blue = dominantRaw.blue * 0.16f + 0.08f,
+            alpha = 0.94f,
+        ),
+        animationSpec = tween(550, easing = FastOutSlowInEasing),
+        label = "mini_tint_end",
+    )
+    val tintBorder by animateColorAsState(
+        targetValue = dominantRaw.copy(alpha = if (player.isPlaying) 0.56f else 0.34f),
+        animationSpec = tween(420),
+        label = "mini_tint_border",
+    )
+
     val rawFrac = if (player.durationMs > 0L) (player.positionMs.toFloat() / player.durationMs.toFloat()).coerceIn(0f, 1f) else 0f
     val animFrac by animateFloatAsState(
         targetValue = rawFrac,
         animationSpec = tween(durationMillis = 260, easing = LinearEasing),
         label = "mini_progress",
     )
-    var swipeUpAcc by remember { mutableFloatStateOf(0f) }
 
-    NoctaliaGlassCard(
-        cornerRadius = 20.dp,
-        strong = true,
-        highlighted = player.isPlaying,
+    // Gesto unificado: deslizar ←/→ cambia de canción, deslizar ↑ abre el reproductor
+    var dragXRaw by remember { mutableFloatStateOf(0f) }
+    var dragYAcc by remember { mutableFloatStateOf(0f) }
+    var isDragging by remember { mutableStateOf(false) }
+    val animDragX by animateFloatAsState(
+        targetValue = if (isDragging) dragXRaw else 0f,
+        animationSpec = spring(dampingRatio = 0.68f, stiffness = 420f),
+        label = "mini_drag_x",
+    )
+    val shape = RoundedCornerShape(20.dp)
+
+    Box(
         modifier = modifier
             .fillMaxWidth()
-            .pointerInput(Unit) {
-                detectVerticalDragGestures(
-                    onDragStart = { swipeUpAcc = 0f },
-                    onVerticalDrag = { _, dragAmount ->
-                        swipeUpAcc += dragAmount
+            .graphicsLayer { translationX = animDragX * 0.45f }
+            .clip(shape)
+            .background(Brush.horizontalGradient(listOf(tintBgStart, tintBgEnd)))
+            .border(BorderStroke(1.2.dp, tintBorder), shape)
+            .pointerInput(track.id) {
+                detectDragGestures(
+                    onDragStart = {
+                        isDragging = true
+                        dragXRaw = 0f
+                        dragYAcc = 0f
+                    },
+                    onDrag = { _, dragAmount ->
+                        dragXRaw = (dragXRaw + dragAmount.x).coerceIn(-160f, 160f)
+                        dragYAcc += dragAmount.y
                     },
                     onDragEnd = {
-                        if (swipeUpAcc < -48f) onExpand()
-                        swipeUpAcc = 0f
+                        val dx = dragXRaw
+                        val dy = dragYAcc
+                        isDragging = false
+                        dragXRaw = 0f
+                        dragYAcc = 0f
+                        when {
+                            dy < -50f && abs(dy) > abs(dx) -> onExpand()
+                            dx < -80f && abs(dx) > abs(dy) -> onNext()
+                            dx > 80f && abs(dx) > abs(dy) -> onPrev()
+                        }
                     },
-                    onDragCancel = { swipeUpAcc = 0f },
+                    onDragCancel = {
+                        isDragging = false
+                        dragXRaw = 0f
+                        dragYAcc = 0f
+                    },
                 )
             }
             .bouncyClick(pressedScale = 0.98f, onClick = onExpand),
@@ -187,7 +266,7 @@ fun MiniPlayerBar(
                                 color = when {
                                     player.isLoading -> NoctaliaColors.CyanGlow
                                     !player.errorMsg.isNullOrBlank() -> NoctaliaColors.Magenta
-                                    else -> NoctaliaColors.TextMuted
+                                    else -> NoctaliaColors.TextPrimary.copy(alpha = 0.78f)
                                 },
                                 fontSize = 12.sp,
                                 maxLines = 1,
@@ -197,7 +276,22 @@ fun MiniPlayerBar(
                     }
                 }
                 NoctaliaMiniEqualizer(isPlaying = player.isPlaying)
-                Spacer(Modifier.width(8.dp))
+                Spacer(Modifier.width(4.dp))
+                Box(
+                    modifier = Modifier
+                        .size(34.dp)
+                        .clip(CircleShape)
+                        .bouncyClick(pressedScale = 0.84f, onClick = onNext),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.SkipNext,
+                        contentDescription = "Siguiente",
+                        tint = NoctaliaColors.TextPrimary,
+                        modifier = Modifier.size(22.dp),
+                    )
+                }
+                Spacer(Modifier.width(4.dp))
                 Box(
                     modifier = Modifier
                         .size(38.dp)
@@ -238,7 +332,7 @@ fun MiniPlayerBar(
                     .padding(bottom = 2.dp)
                     .height(2.5.dp)
                     .clip(RoundedCornerShape(99.dp))
-                    .background(Color.White.copy(alpha = 0.14f)),
+                    .background(Color.White.copy(alpha = 0.16f)),
             ) {
                 Box(
                     modifier = Modifier
@@ -470,9 +564,10 @@ fun FullPlayerOverlay(
                     LyricsPanel(
                         player = player,
                         onSeek = onSeek,
+                        onPlayPause = onPlayPause,
                         modifier = Modifier
                             .fillMaxSize()
-                            .padding(vertical = 12.dp),
+                            .padding(vertical = 8.dp),
                     )
                 }
 
@@ -977,28 +1072,49 @@ fun FullPlayerOverlay(
             }
             }
 
-            // Barra inferior de 4 pestañas rápidas: Letra | Cola | EQ | Timer
+            // Barra inferior de 4 pestañas con iconos + badge de cola/timer
             Spacer(Modifier.height(8.dp))
-            NoctaliaGlassCard(cornerRadius = 99.dp, modifier = Modifier.fillMaxWidth()) {
+            val timerActive = player.sleepRemainingSec != null || player.sleepEndOfTrack
+            val queueLabel = if (player.queue.isNotEmpty()) "Cola · ${player.queue.size}" else "Cola"
+            NoctaliaGlassCard(cornerRadius = 22.dp, modifier = Modifier.fillMaxWidth()) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(5.dp),
-                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    listOf(
-                        "lyrics" to "Letra",
-                        "queue" to "Cola",
-                        "audio" to "EQ",
-                        "timer" to "Timer",
-                    ).forEach { (key, label) ->
-                        val active = activeSheet == key
-                        NoctaliaPillChip(
-                            label = label,
-                            active = active,
-                            onClick = { activeSheet = if (active) null else key },
-                        )
-                    }
+                    PlayerBottomTabItem(
+                        icon = Icons.Rounded.MusicNote,
+                        label = "Letra",
+                        active = activeSheet == "lyrics",
+                        accentDot = false,
+                        onClick = { activeSheet = if (activeSheet == "lyrics") null else "lyrics" },
+                        modifier = Modifier.weight(1f),
+                    )
+                    PlayerBottomTabItem(
+                        icon = Icons.AutoMirrored.Rounded.QueueMusic,
+                        label = queueLabel,
+                        active = activeSheet == "queue",
+                        accentDot = false,
+                        onClick = { activeSheet = if (activeSheet == "queue") null else "queue" },
+                        modifier = Modifier.weight(1f),
+                    )
+                    PlayerBottomTabItem(
+                        icon = Icons.Rounded.GraphicEq,
+                        label = "EQ",
+                        active = activeSheet == "audio",
+                        accentDot = false,
+                        onClick = { activeSheet = if (activeSheet == "audio") null else "audio" },
+                        modifier = Modifier.weight(1f),
+                    )
+                    PlayerBottomTabItem(
+                        icon = Icons.Rounded.Bedtime,
+                        label = "Timer",
+                        active = activeSheet == "timer",
+                        accentDot = timerActive,
+                        onClick = { activeSheet = if (activeSheet == "timer") null else "timer" },
+                        modifier = Modifier.weight(1f),
+                    )
                 }
             }
         }
@@ -1006,11 +1122,58 @@ fun FullPlayerOverlay(
 }
 
 @Composable
+private fun PlayerBottomTabItem(
+    icon: ImageVector,
+    label: String,
+    active: Boolean,
+    accentDot: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val bg by animateColorAsState(
+        targetValue = if (active) NoctaliaColors.Cyan.copy(alpha = 0.24f) else Color.Transparent,
+        animationSpec = tween(200),
+        label = "ptab_bg",
+    )
+    val tint by animateColorAsState(
+        targetValue = when {
+            active -> NoctaliaColors.CyanGlow
+            accentDot -> NoctaliaColors.Magenta
+            else -> NoctaliaColors.TextPrimary.copy(alpha = 0.78f)
+        },
+        animationSpec = tween(200),
+        label = "ptab_tint",
+    )
+    val shape = RoundedCornerShape(16.dp)
+    Column(
+        modifier = modifier
+            .clip(shape)
+            .background(bg)
+            .bouncyClick(pressedScale = 0.92f, onClick = onClick)
+            .padding(vertical = 7.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Icon(imageVector = icon, contentDescription = label, tint = tint, modifier = Modifier.size(18.dp))
+        Text(
+            text = label,
+            color = tint,
+            fontSize = 11.sp,
+            fontWeight = if (active) FontWeight.ExtraBold else FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+@Composable
 private fun LyricsPanel(
     player: PlayerUiState,
     onSeek: (Long) -> Unit,
+    onPlayPause: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val track = player.currentTrack
     val lyrics = player.lyrics
     val listState = rememberLazyListState()
 
@@ -1025,80 +1188,143 @@ private fun LyricsPanel(
         }
     }
 
-    NoctaliaGlassCard(cornerRadius = 22.dp, strong = true, modifier = modifier.fillMaxWidth()) {
-        when {
-            player.loadingLyrics -> {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(color = NoctaliaColors.CyanGlow, strokeWidth = 2.5.dp)
-                }
-            }
-
-            lyrics.synced.isNotEmpty() -> {
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(horizontal = 18.dp, vertical = 22.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp),
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        // Cabecera compacta estilo Apple Music mientras lees la letra
+        if (track != null) {
+            NoctaliaGlassCard(cornerRadius = 18.dp, modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    itemsIndexed(lyrics.synced) { idx, line ->
-                        val isActive = idx == activeIdx
-                        val lineColor by animateColorAsState(
-                            targetValue = when {
-                                isActive -> NoctaliaColors.CyanGlow
-                                idx < activeIdx -> NoctaliaColors.TextDim
-                                else -> NoctaliaColors.TextPrimary.copy(alpha = 0.82f)
-                            },
-                            animationSpec = tween(260, easing = FastOutSlowInEasing),
-                            label = "lyric_color_$idx",
-                        )
-                        val lineScale by animateFloatAsState(
-                            targetValue = if (isActive) 1.05f else 0.98f,
-                            animationSpec = spring(dampingRatio = 0.72f, stiffness = 360f),
-                            label = "lyric_scale_$idx",
+                    TrackCoverImage(url = track.thumb, size = 40.dp, cornerRadius = 10.dp)
+                    Spacer(Modifier.width(10.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = track.title,
+                            color = NoctaliaColors.TextPrimary,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
                         Text(
-                            text = line.text,
-                            color = lineColor,
-                            fontSize = 18.sp,
-                            fontWeight = if (isActive) FontWeight.ExtraBold else FontWeight.SemiBold,
-                            lineHeight = 25.sp,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .graphicsLayer {
-                                    scaleX = lineScale
-                                    scaleY = lineScale
-                                    transformOrigin = TransformOrigin(0f, 0.5f)
-                                }
-                                .clickable { onSeek(line.timeMs) },
+                            text = "${track.artist} · Letra",
+                            color = NoctaliaColors.CyanGlow,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .size(34.dp)
+                            .clip(CircleShape)
+                            .background(NoctaliaColors.Cyan)
+                            .bouncyClick(pressedScale = 0.86f, onClick = onPlayPause),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            imageVector = if (player.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                            contentDescription = "Play/Pause",
+                            tint = NoctaliaColors.OnCyan,
+                            modifier = Modifier.size(20.dp),
                         )
                     }
                 }
             }
+        }
 
-            lyrics.plain.isNotBlank() -> {
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .verticalScroll(rememberScrollState())
-                        .padding(18.dp),
-                ) {
-                    Text(
-                        text = lyrics.plain,
-                        color = NoctaliaColors.TextPrimary,
-                        fontSize = 15.sp,
-                        lineHeight = 23.sp,
-                    )
+        // Contenedor translúcido para que el fondo animado brille detrás de las letras
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(22.dp))
+                .background(Color(0x38050B11))
+                .border(1.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(22.dp)),
+        ) {
+            when {
+                player.loadingLyrics -> {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(color = NoctaliaColors.CyanGlow, strokeWidth = 2.5.dp)
+                    }
                 }
-            }
 
-            else -> {
-                Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
-                    Text(
-                        text = "No se encontró letra sincronizada para esta canción.",
-                        color = NoctaliaColors.TextMuted,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.SemiBold,
-                    )
+                lyrics.synced.isNotEmpty() -> {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(horizontal = 18.dp, vertical = 26.dp),
+                        verticalArrangement = Arrangement.spacedBy(18.dp),
+                    ) {
+                        itemsIndexed(lyrics.synced) { idx, line ->
+                            val isActive = idx == activeIdx
+                            val lineAlpha by animateFloatAsState(
+                                targetValue = when {
+                                    isActive -> 1f
+                                    idx < activeIdx -> 0.34f
+                                    else -> 0.56f
+                                },
+                                animationSpec = tween(280, easing = FastOutSlowInEasing),
+                                label = "lyric_alpha_$idx",
+                            )
+                            val lineScale by animateFloatAsState(
+                                targetValue = if (isActive) 1.05f else 0.96f,
+                                animationSpec = spring(dampingRatio = 0.72f, stiffness = 340f),
+                                label = "lyric_scale_$idx",
+                            )
+                            Text(
+                                text = line.text,
+                                color = Color.White,
+                                fontSize = if (isActive) 22.sp else 18.sp,
+                                fontWeight = if (isActive) FontWeight.ExtraBold else FontWeight.Bold,
+                                lineHeight = 28.sp,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .graphicsLayer {
+                                        alpha = lineAlpha
+                                        scaleX = lineScale
+                                        scaleY = lineScale
+                                        transformOrigin = TransformOrigin(0f, 0.5f)
+                                    }
+                                    .clickable { onSeek(line.timeMs) },
+                            )
+                        }
+                    }
+                }
+
+                lyrics.plain.isNotBlank() -> {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .verticalScroll(rememberScrollState())
+                            .padding(18.dp),
+                    ) {
+                        Text(
+                            text = lyrics.plain,
+                            color = NoctaliaColors.TextPrimary,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Medium,
+                            lineHeight = 25.sp,
+                        )
+                    }
+                }
+
+                else -> {
+                    Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+                        Text(
+                            text = "No se encontró letra sincronizada para esta canción.",
+                            color = NoctaliaColors.TextMuted,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
                 }
             }
         }
