@@ -371,11 +371,15 @@ fun FullPlayerOverlay(
     onToggleAutoRadio: (Boolean) -> Unit,
     onPlayQueueIndex: (Int) -> Unit,
     onRemoveQueueIndex: (Int) -> Unit,
+    onMoveQueueItem: (Int, Int) -> Unit,
     onClearQueue: () -> Unit,
     onSelectEqPreset: (EqPreset) -> Unit,
     onBassBoostChange: (Int) -> Unit,
     onToggleNormalize: (Boolean) -> Unit,
     onToggleSponsorBlock: (Boolean) -> Unit,
+    onToggleSkipSilence: (Boolean) -> Unit,
+    onToggleSmoothFade: (Boolean) -> Unit,
+    onSetSpeedPitch: (Float, Float) -> Unit,
     onSetSleepMinutes: (Int) -> Unit,
     onSetSleepEndOfTrack: () -> Unit,
     onCancelSleep: () -> Unit,
@@ -631,6 +635,8 @@ fun FullPlayerOverlay(
                                     isCurrent = false,
                                     isFavorite = qTrack.id in favoriteIds,
                                     onPlay = { onPlayQueueIndex(idx) },
+                                    onMoveUp = if (idx > 0) ({ onMoveQueueItem(idx, idx - 1) }) else null,
+                                    onMoveDown = if (idx < player.queue.lastIndex) ({ onMoveQueueItem(idx, idx + 1) }) else null,
                                     onRemove = { onRemoveQueueIndex(idx) },
                                     indexBadge = "${idx + 1}",
                                 )
@@ -719,6 +725,94 @@ fun FullPlayerOverlay(
                                         activeTrackColor = NoctaliaColors.Cyan,
                                         inactiveTrackColor = Color.White.copy(alpha = 0.2f),
                                     ),
+                                )
+                            }
+                        }
+
+                        // Velocidad y Tono nativos (Slowed / Nightcore / Sliders)
+                        NoctaliaGlassCard(cornerRadius = 18.dp, strong = true, modifier = Modifier.fillMaxWidth()) {
+                            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text("Velocidad y Tono (Slowed / Nightcore)", color = NoctaliaColors.CyanGlow, fontSize = 15.sp, fontWeight = FontWeight.ExtraBold)
+                                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    items(
+                                        listOf(
+                                            Triple("Normal", 1.0f, 1.0f),
+                                            Triple("Slowed", 0.84f, 0.88f),
+                                            Triple("Nightcore", 1.22f, 1.16f),
+                                            Triple("Rápido 1.25x", 1.25f, 1.0f),
+                                        )
+                                    ) { (lbl, spd, ptc) ->
+                                        val isAct = abs(audioFx.playbackSpeed - spd) < 0.03f && abs(audioFx.playbackPitch - ptc) < 0.03f
+                                        NoctaliaPillChip(
+                                            label = lbl,
+                                            active = isAct,
+                                            onClick = { onSetSpeedPitch(spd, ptc) },
+                                        )
+                                    }
+                                }
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                    Text("Velocidad", color = NoctaliaColors.TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                    Text("%.2fx".format(audioFx.playbackSpeed), color = NoctaliaColors.CyanGlow, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                }
+                                Slider(
+                                    value = audioFx.playbackSpeed,
+                                    onValueChange = { onSetSpeedPitch(it, audioFx.playbackPitch) },
+                                    valueRange = 0.5f..2.0f,
+                                    colors = SliderDefaults.colors(
+                                        thumbColor = Color.White,
+                                        activeTrackColor = NoctaliaColors.Cyan,
+                                        inactiveTrackColor = Color.White.copy(alpha = 0.2f),
+                                    ),
+                                )
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                    Text("Tono (Pitch)", color = NoctaliaColors.TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                    Text("%.2fx".format(audioFx.playbackPitch), color = NoctaliaColors.CyanGlow, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                }
+                                Slider(
+                                    value = audioFx.playbackPitch,
+                                    onValueChange = { onSetSpeedPitch(audioFx.playbackSpeed, it) },
+                                    valueRange = 0.6f..1.4f,
+                                    colors = SliderDefaults.colors(
+                                        thumbColor = Color.White,
+                                        activeTrackColor = NoctaliaColors.Cyan,
+                                        inactiveTrackColor = Color.White.copy(alpha = 0.2f),
+                                    ),
+                                )
+                            }
+                        }
+
+                        NoctaliaGlassCard(cornerRadius = 16.dp, modifier = Modifier.fillMaxWidth()) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text("Saltar silencios", color = NoctaliaColors.TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                                    Text("Recorta silencios largos al inicio y final", color = NoctaliaColors.TextMuted, fontSize = 12.sp)
+                                }
+                                Switch(
+                                    checked = audioFx.skipSilenceEnabled,
+                                    onCheckedChange = onToggleSkipSilence,
+                                    colors = SwitchDefaults.colors(checkedThumbColor = NoctaliaColors.OnCyan, checkedTrackColor = NoctaliaColors.Cyan),
+                                )
+                            }
+                        }
+
+                        NoctaliaGlassCard(cornerRadius = 16.dp, modifier = Modifier.fillMaxWidth()) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text("Transiciones suaves (Fade)", color = NoctaliaColors.TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                                    Text("Entrada y salida gradual al pausar o cambiar pista", color = NoctaliaColors.TextMuted, fontSize = 12.sp)
+                                }
+                                Switch(
+                                    checked = audioFx.smoothFadeEnabled,
+                                    onCheckedChange = onToggleSmoothFade,
+                                    colors = SwitchDefaults.colors(checkedThumbColor = NoctaliaColors.OnCyan, checkedTrackColor = NoctaliaColors.Cyan),
                                 )
                             }
                         }

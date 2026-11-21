@@ -1,12 +1,17 @@
 package com.noctalia.music.ui.screens
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -15,8 +20,9 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Search
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
@@ -29,12 +35,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.noctalia.music.data.LibraryPayload
 import com.noctalia.music.data.Track
 import com.noctalia.music.player.PlayerUiState
 import com.noctalia.music.ui.MainUiState
+import com.noctalia.music.ui.components.NoctaliaGlassCard
 import com.noctalia.music.ui.components.NoctaliaPillChip
 import com.noctalia.music.ui.components.TrackListShimmer
 import com.noctalia.music.ui.components.TrackRowItem
@@ -60,6 +68,7 @@ fun SearchScreen(
     onAddQueue: (Track) -> Unit,
     onToggleFavorite: (Track) -> Unit,
     onMoreTrackClick: (Track) -> Unit,
+    onClearSearchHistory: () -> Unit,
 ) {
     val favIds = remember(library.favorites) { library.favorites.map { it.id }.toSet() }
 
@@ -107,6 +116,74 @@ fun SearchScreen(
                 cursorColor = NoctaliaColors.CyanGlow,
             ),
         )
+
+        // Sugerencias de autocompletado en vivo
+        AnimatedVisibility(visible = ui.searchQuery.isNotBlank() && ui.searchSuggestions.isNotEmpty()) {
+            NoctaliaGlassCard(cornerRadius = 16.dp, strong = true, modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(vertical = 4.dp)) {
+                    ui.searchSuggestions.take(5).forEachIndexed { idx, sug ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onQueryChange(sug, true) }
+                                .padding(horizontal = 12.dp, vertical = 9.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Search,
+                                contentDescription = null,
+                                tint = NoctaliaColors.CyanGlow,
+                                modifier = Modifier.size(16.dp),
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Text(
+                                text = sug,
+                                color = NoctaliaColors.TextPrimary,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        if (idx < ui.searchSuggestions.take(5).lastIndex) {
+                            HorizontalDivider(color = NoctaliaColors.BorderCyan.copy(alpha = 0.25f))
+                        }
+                    }
+                }
+            }
+        }
+
+        // Búsquedas recientes cuando la barra está vacía
+        AnimatedVisibility(visible = ui.searchQuery.isBlank() && library.searchHistory.isNotEmpty()) {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                        Icon(Icons.Rounded.History, contentDescription = null, tint = NoctaliaColors.Cyan, modifier = Modifier.size(15.dp))
+                        Text("Búsquedas recientes", color = NoctaliaColors.TextMuted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                    Text(
+                        text = "Limpiar",
+                        color = NoctaliaColors.Danger,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.clickable(onClick = onClearSearchHistory),
+                    )
+                }
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(library.searchHistory) { prevQ ->
+                        NoctaliaPillChip(
+                            label = prevQ,
+                            active = false,
+                            onClick = { onQueryChange(prevQ, true) },
+                        )
+                    }
+                }
+            }
+        }
 
         // Filtros de búsqueda: Canciones / Artistas / Todo (Álbumes y Remixes)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

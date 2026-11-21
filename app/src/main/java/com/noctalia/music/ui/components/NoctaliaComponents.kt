@@ -54,6 +54,8 @@ import androidx.compose.material.icons.rounded.DownloadDone
 import androidx.compose.material.icons.rounded.DownloadForOffline
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Person
@@ -342,6 +344,8 @@ fun TrackRowItem(
     onToggleFavorite: (() -> Unit)? = null,
     onRemove: (() -> Unit)? = null,
     onMoreClick: (() -> Unit)? = null,
+    onMoveUp: (() -> Unit)? = null,
+    onMoveDown: (() -> Unit)? = null,
     indexBadge: String? = null,
 ) {
     val titleColor by animateColorAsState(
@@ -527,6 +531,26 @@ fun TrackRowItem(
                         Icon(
                             imageVector = Icons.Rounded.Add,
                             contentDescription = "Añadir a la cola",
+                            tint = NoctaliaColors.TextPrimary,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                }
+                if (onMoveUp != null) {
+                    IconButton(onClick = onMoveUp, modifier = Modifier.size(30.dp)) {
+                        Icon(
+                            imageVector = Icons.Rounded.KeyboardArrowUp,
+                            contentDescription = "Subir en cola",
+                            tint = NoctaliaColors.TextPrimary,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                }
+                if (onMoveDown != null) {
+                    IconButton(onClick = onMoveDown, modifier = Modifier.size(30.dp)) {
+                        Icon(
+                            imageVector = Icons.Rounded.KeyboardArrowDown,
+                            contentDescription = "Bajar en cola",
                             tint = NoctaliaColors.TextPrimary,
                             modifier = Modifier.size(20.dp),
                         )

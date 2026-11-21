@@ -1,9 +1,14 @@
 package com.noctalia.music.data
 
 import android.content.Context
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
@@ -11,12 +16,15 @@ import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 
 /**
- * Repositorio local de Favoritas, Playlists y Recientes.
+ * Repositorio local de Favoritas, Playlists, Recientes, Stats y Última Sesión.
  * Usa exactamente el mismo esquema JSON que Noctalia Music en CachyOS (`music_library.json`).
+ * Escritura atómica en segundo plano con cola secuencial (0 bloqueos en el hilo UI, 0 carreras en .tmp).
  */
+@OptIn(ExperimentalCoroutinesApi::class)
 class LibraryRepository(context: Context) {
 
     private val file = File(context.filesDir, "music_library.json")
+    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(1))
     private val json = Json {
         ignoreUnknownKeys = true
         prettyPrint = true
@@ -57,32 +65,65 @@ class LibraryRepository(context: Context) {
             .take(30)
         val validBgStyle = if (raw.settings.bgStyle in ALLOWED_BG_STYLES) raw.settings.bgStyle else "liquid"
         val validLoop = if (raw.settings.loopStatus in ALLOWED_LOOP_STATUS) raw.settings.loopStatus else "None"
+        val cleanHistory = raw.searchHistory
+            .map { it.replace(Regex("[\\r\\n\\u0000-\\u001F]"), "").trim().take(120) }
+            .filter { it.isNotEmpty() }
+            .distinctBy { it.lowercase() }
+            .take(MAX_SEARCH_HISTORY)
+        val cleanStats = LinkedHashMap<String, TrackStat>()
+        raw.stats.entries.take(MAX_STATS).forEach { (_, st) ->
+            val t = SecurityValidators.sanitizeTrack(st.track) ?: return@forEach
+            cleanStats[t.id] = TrackStat(
+                track = t,
+                playCount = st.playCount.coerceIn(0, 100_000),
+                listenedSec = st.listenedSec.coerceIn(0L, 10_000_000L),
+                lastPlayedMs = st.lastPlayedMs.coerceAtLeast(0L),
+            )
+        }
+        val cleanSnap = raw.lastSession?.let { snap ->
+            val stTrack = snap.track?.let { SecurityValidators.sanitizeTrack(it) }
+            val stQueue = snap.queue.mapNotNull { SecurityValidators.sanitizeTrack(it) }.take(60)
+            if (stTrack != null) {
+                PlaybackSnapshot(
+                    track = stTrack,
+                    positionMs = snap.positionMs.coerceIn(0L, 24L * 3600L * 1000L),
+                    queue = stQueue,
+                )
+            } else {
+                null
+            }
+        }
         return LibraryPayload(
             favorites = favs,
             playlists = if (pls.isEmpty()) mapOf("Gaming" to emptyList(), "Chill" to emptyList()) else pls,
             recent = rec,
             settings = raw.settings.copy(bgStyle = validBgStyle, loopStatus = validLoop),
+            searchHistory = cleanHistory,
+            stats = cleanStats,
+            lastSession = cleanSnap,
         )
     }
 
     private fun persist(updated: LibraryPayload) {
         _state.value = updated
-        val tmp = File(file.parentFile, "music_library.tmp")
-        try {
-            tmp.writeText(json.encodeToString(updated), Charsets.UTF_8)
-            Files.move(
-                tmp.toPath(),
-                file.toPath(),
-                StandardCopyOption.REPLACE_EXISTING,
-                StandardCopyOption.ATOMIC_MOVE,
-            )
-        } catch (_: Exception) {
+        ioScope.launch {
+            val tmp = File(file.parentFile, "music_library.tmp")
             try {
-                if (tmp.exists()) {
-                    Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
-                }
+                tmp.writeText(json.encodeToString(updated), Charsets.UTF_8)
+                Files.move(
+                    tmp.toPath(),
+                    file.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING,
+                    StandardCopyOption.ATOMIC_MOVE,
+                )
             } catch (_: Exception) {
-                tmp.delete()
+                try {
+                    if (tmp.exists()) {
+                        Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
+                    }
+                } catch (_: Exception) {
+                    tmp.delete()
+                }
             }
         }
     }
@@ -91,6 +132,8 @@ class LibraryRepository(context: Context) {
         private const val MAX_FAVORITES = 2000
         private const val MAX_PLAYLISTS = 60
         private const val MAX_TRACKS_PER_PLAYLIST = 1000
+        private const val MAX_SEARCH_HISTORY = 12
+        private const val MAX_STATS = 500
         private val ALLOWED_BG_STYLES = setOf("liquid", "vortex", "aurora", "particles")
         private val ALLOWED_LOOP_STATUS = setOf("None", "Track", "Playlist")
     }
@@ -191,6 +234,82 @@ class LibraryRepository(context: Context) {
     fun updateDynamicAppTheme(enabled: Boolean) {
         val cur = _state.value
         persist(cur.copy(settings = cur.settings.copy(dynamicAppTheme = enabled)))
+    }
+
+    fun updateSkipSilence(enabled: Boolean) {
+        val cur = _state.value
+        persist(cur.copy(settings = cur.settings.copy(skipSilence = enabled)))
+    }
+
+    fun updateSmoothFade(enabled: Boolean) {
+        val cur = _state.value
+        persist(cur.copy(settings = cur.settings.copy(smoothFade = enabled)))
+    }
+
+    // ─── HISTORIAL DE BÚSQUEDAS ───
+    fun recordSearchQuery(raw: String) {
+        val clean = raw.replace(Regex("[\\r\\n\\u0000-\\u001F]"), "").trim().take(120)
+        if (clean.length < 2) return
+        val cur = _state.value
+        val next = (listOf(clean) + cur.searchHistory.filterNot { it.equals(clean, ignoreCase = true) })
+            .take(MAX_SEARCH_HISTORY)
+        persist(cur.copy(searchHistory = next))
+    }
+
+    fun removeSearchQuery(query: String) {
+        val cur = _state.value
+        persist(cur.copy(searchHistory = cur.searchHistory.filterNot { it.equals(query, ignoreCase = true) }))
+    }
+
+    fun clearSearchHistory() {
+        val cur = _state.value
+        if (cur.searchHistory.isEmpty()) return
+        persist(cur.copy(searchHistory = emptyList()))
+    }
+
+    // ─── ESTADÍSTICAS LOCALES (BROOK STATS) ───
+    fun recordTrackPlayStat(track: Track, incrementPlayCount: Boolean, addSeconds: Long) {
+        val clean = SecurityValidators.sanitizeTrack(track) ?: return
+        val cur = _state.value
+        val nextStats = LinkedHashMap(cur.stats)
+        val existing = nextStats[clean.id]
+        val updated = TrackStat(
+            track = clean,
+            playCount = ((existing?.playCount ?: 0) + if (incrementPlayCount) 1 else 0).coerceAtMost(100_000),
+            listenedSec = ((existing?.listenedSec ?: 0L) + addSeconds.coerceIn(0L, 600L)).coerceAtMost(10_000_000L),
+            lastPlayedMs = System.currentTimeMillis(),
+        )
+        nextStats[clean.id] = updated
+        // Mantener tope de 500 pistas ordenando por uso si se supera
+        val bounded = if (nextStats.size > MAX_STATS) {
+            nextStats.entries
+                .sortedByDescending { it.value.listenedSec * 2 + it.value.playCount * 30L }
+                .take(MAX_STATS)
+                .associateTo(LinkedHashMap()) { it.key to it.value }
+        } else {
+            nextStats
+        }
+        persist(cur.copy(stats = bounded))
+    }
+
+    fun clearStats() {
+        val cur = _state.value
+        if (cur.stats.isEmpty()) return
+        persist(cur.copy(stats = emptyMap()))
+    }
+
+    // ─── SNAPSHOT DE ÚLTIMA SESIÓN (RECORDAR CANCIÓN, SEGUNDO Y COLA) ───
+    fun savePlaybackSnapshot(track: Track?, positionMs: Long, queue: List<Track>) {
+        val clean = track?.let { SecurityValidators.sanitizeTrack(it) } ?: return
+        val cleanQueue = queue.mapNotNull { SecurityValidators.sanitizeTrack(it) }.take(60)
+        val snap = PlaybackSnapshot(
+            track = clean,
+            positionMs = positionMs.coerceIn(0L, 24L * 3600L * 1000L),
+            queue = cleanQueue,
+        )
+        val cur = _state.value
+        if (cur.lastSession == snap) return
+        persist(cur.copy(lastSession = snap))
     }
 
     fun exportJson(): String = json.encodeToString(_state.value)

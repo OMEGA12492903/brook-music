@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
@@ -100,6 +101,8 @@ fun LibraryScreen(
     onSelectBgStyle: (PlayerBgStyle) -> Unit,
     onToggleBgUseCoverColors: (Boolean) -> Unit,
     onToggleDynamicAppTheme: (Boolean) -> Unit,
+    onOpenArtistFromStats: (String) -> Unit,
+    onClearStats: () -> Unit,
     onCheckUpdate: () -> Unit,
     onDownloadUpdate: () -> Unit,
     onOpenReleases: () -> Unit,
@@ -238,6 +241,13 @@ fun LibraryScreen(
             }
             item {
                 NoctaliaPillChip(
+                    label = "Stats",
+                    active = activeTab == "stats",
+                    onClick = { onTabChange("stats") },
+                )
+            }
+            item {
+                NoctaliaPillChip(
                     label = if (ui.isLoggedIn) "Cuenta YT ✓" else "Cuenta YT",
                     active = activeTab == "account",
                     onClick = { onTabChange("account") },
@@ -252,7 +262,7 @@ fun LibraryScreen(
             }
         }
 
-        val libTabOrder = mapOf("favs" to 0, "playlists" to 1, "account" to 2, "sync" to 3)
+        val libTabOrder = mapOf("favs" to 0, "playlists" to 1, "stats" to 2, "account" to 3, "sync" to 4)
         AnimatedContent(
             targetState = activeTab,
             transitionSpec = {
@@ -431,6 +441,151 @@ fun LibraryScreen(
                                     onRemove = { onRemoveFromPlaylist(activePl, track.id) },
                                 )
                             }
+                        }
+                    }
+                }
+            }
+
+            "stats" -> {
+                val allStats = remember(library.stats) {
+                    library.stats.values.sortedByDescending { it.listenedSec * 2 + it.playCount * 35L }
+                }
+                val totalSec = remember(allStats) { allStats.sumOf { it.listenedSec } }
+                val totalPlays = remember(allStats) { allStats.sumOf { it.playCount } }
+                val topArtists = remember(allStats) {
+                    allStats
+                        .groupBy { it.track.artist.substringBefore(",").trim().ifEmpty { "Artista" } }
+                        .map { (artist, list) ->
+                            Triple(artist, list.sumOf { it.listenedSec }, list.sumOf { it.playCount })
+                        }
+                        .sortedByDescending { it.second * 2 + it.third * 35L }
+                        .take(8)
+                }
+
+                LazyColumn(
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(bottom = 164.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    item {
+                        NoctaliaGlassCard(cornerRadius = 18.dp, strong = true, modifier = Modifier.fillMaxWidth()) {
+                            Column(
+                                modifier = Modifier.padding(16.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                Text(
+                                    text = "Brook Stats · 100% local",
+                                    color = NoctaliaColors.CyanGlow,
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                )
+                                val mins = totalSec / 60L
+                                val timeLabel = if (mins >= 60L) "${mins / 60L}h ${mins % 60L}m" else "${mins} min"
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                ) {
+                                    Column {
+                                        Text(timeLabel, color = NoctaliaColors.TextPrimary, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold)
+                                        Text("Tiempo escuchado", color = NoctaliaColors.TextMuted, fontSize = 11.sp)
+                                    }
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text("$totalPlays", color = NoctaliaColors.CyanGlow, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold)
+                                        Text("Reproducciones", color = NoctaliaColors.TextMuted, fontSize = 11.sp)
+                                    }
+                                    Column(horizontalAlignment = Alignment.End) {
+                                        Text("${topArtists.size}", color = NoctaliaColors.Magenta, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold)
+                                        Text("Top artistas", color = NoctaliaColors.TextMuted, fontSize = 11.sp)
+                                    }
+                                }
+                                if (allStats.isNotEmpty()) {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Button(
+                                            onClick = { onPlayTrackList(allStats.take(30).map { it.track }, 0) },
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = NoctaliaColors.Cyan,
+                                                contentColor = NoctaliaColors.OnCyan,
+                                            ),
+                                            shape = RoundedCornerShape(99.dp),
+                                        ) {
+                                            Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                                            Spacer(Modifier.width(4.dp))
+                                            Text("Reproducir mi Top", fontWeight = FontWeight.ExtraBold, fontSize = 12.sp)
+                                        }
+                                        Text(
+                                            text = "Reiniciar",
+                                            color = NoctaliaColors.Danger,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier
+                                                .clickable(onClick = onClearStats)
+                                                .padding(horizontal = 8.dp, vertical = 6.dp),
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (topArtists.isNotEmpty()) {
+                        item {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text("Tus artistas más escuchados", color = NoctaliaColors.TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.ExtraBold)
+                                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    itemsIndexed(topArtists, key = { _, item -> "art_${item.first}" }) { idx, (artistName, sec, plays) ->
+                                        val m = (sec / 60L).coerceAtLeast(1L)
+                                        NoctaliaGlassCard(
+                                            cornerRadius = 16.dp,
+                                            highlighted = idx == 0,
+                                            modifier = Modifier.clickable { onOpenArtistFromStats(artistName) },
+                                        ) {
+                                            Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+                                                Text(
+                                                    text = "#${idx + 1} $artistName",
+                                                    color = if (idx == 0) NoctaliaColors.CyanGlow else NoctaliaColors.TextPrimary,
+                                                    fontSize = 13.sp,
+                                                    fontWeight = FontWeight.ExtraBold,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                )
+                                                Text(
+                                                    text = "$plays rep. · ${m}m",
+                                                    color = NoctaliaColors.TextMuted,
+                                                    fontSize = 11.sp,
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (allStats.isEmpty()) {
+                        item {
+                            Text(
+                                text = "Escucha algunas canciones para ver aquí tu Top personal y estadísticas privadas.",
+                                color = NoctaliaColors.TextMuted,
+                                fontSize = 13.sp,
+                                modifier = Modifier.padding(top = 14.dp),
+                            )
+                        }
+                    } else {
+                        item {
+                            Text("Tus canciones más repetidas", color = NoctaliaColors.TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.ExtraBold)
+                        }
+                        val topSongs = allStats.take(25)
+                        itemsIndexed(topSongs, key = { _, st -> "st_${st.track.id}" }) { idx, st ->
+                            TrackRowItem(
+                                track = st.track,
+                                isCurrent = player.currentTrack?.id == st.track.id,
+                                isFavorite = st.track.id in favIds,
+                                onPlay = { onPlayTrack(st.track) },
+                                onAddQueue = { onAddQueue(st.track) },
+                                onToggleFavorite = { onToggleFavorite(st.track) },
+                                onMoreClick = { onMoreTrackClick(st.track) },
+                                indexBadge = "#${idx + 1}",
+                            )
                         }
                     }
                 }

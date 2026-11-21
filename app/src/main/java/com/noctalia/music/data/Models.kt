@@ -24,6 +24,23 @@ data class LibrarySettings(
     @SerialName("bg_style") val bgStyle: String = "liquid",
     @SerialName("bg_use_cover_colors") val bgUseCoverColors: Boolean = true,
     @SerialName("dynamic_app_theme") val dynamicAppTheme: Boolean = true,
+    @SerialName("skip_silence") val skipSilence: Boolean = false,
+    @SerialName("smooth_fade") val smoothFade: Boolean = true,
+)
+
+@Serializable
+data class PlaybackSnapshot(
+    val track: Track? = null,
+    @SerialName("position_ms") val positionMs: Long = 0L,
+    val queue: List<Track> = emptyList(),
+)
+
+@Serializable
+data class TrackStat(
+    val track: Track,
+    @SerialName("play_count") val playCount: Int = 0,
+    @SerialName("listened_sec") val listenedSec: Long = 0L,
+    @SerialName("last_played_ms") val lastPlayedMs: Long = 0L,
 )
 
 /**
@@ -35,6 +52,9 @@ data class LibraryPayload(
     val playlists: Map<String, List<Track>> = mapOf("Gaming" to emptyList(), "Chill" to emptyList()),
     val recent: List<Track> = emptyList(),
     val settings: LibrarySettings = LibrarySettings(),
+    @SerialName("search_history") val searchHistory: List<String> = emptyList(),
+    val stats: Map<String, TrackStat> = emptyMap(),
+    @SerialName("last_session") val lastSession: PlaybackSnapshot? = null,
 )
 
 data class RemotePlaylist(
@@ -150,11 +170,68 @@ object SecurityValidators {
     }
 
     fun extractPlaylistIdFromUrl(input: String): String? {
-        val trimmed = input.trim()
+        val trimmed = input.trim().take(2048)
         if (trimmed.isEmpty()) return null
         val listParam = Regex("[?&]list=([A-Za-z0-9_-]{2,80})").find(trimmed)?.groupValues?.getOrNull(1)
         if (listParam != null) return listParam
         if (PLAYLIST_ID_RE.matches(trimmed)) return trimmed
         return null
+    }
+
+    private val URL_IN_TEXT_RE = Regex("https?://[^\\s<>\"'\\)\\]]+")
+    private val STRICT_YT_VIDEO_RE = Regex("^[A-Za-z0-9_-]{11}$")
+    private val ALLOWED_SHARE_HOSTS = setOf(
+        "youtu.be",
+        "youtube.com",
+        "www.youtube.com",
+        "m.youtube.com",
+        "music.youtube.com",
+    )
+
+    private fun parseTrustedYoutubeUri(rawText: String?): URI? {
+        val bounded = rawText?.trim()?.take(2048) ?: return null
+        if (bounded.isEmpty()) return null
+        val candidates = URL_IN_TEXT_RE.findAll(bounded).map { it.value }.toList()
+        for (c in candidates) {
+            val uri = try {
+                URI(c)
+            } catch (_: Exception) {
+                null
+            } ?: continue
+            val scheme = uri.scheme?.lowercase() ?: continue
+            if (scheme != "https" && scheme != "http") continue
+            if (uri.userInfo != null) continue
+            val host = uri.host?.lowercase()?.trimEnd('.') ?: continue
+            if (host in ALLOWED_SHARE_HOSTS) return uri
+        }
+        return null
+    }
+
+    /**
+     * Extrae de forma segura un videoId de YouTube únicamente si pertenece a un dominio oficial
+     * (`youtu.be`, `youtube.com`, `music.youtube.com`, `m.youtube.com`).
+     */
+    fun extractVideoIdFromSharedText(rawText: String?): String? {
+        val uri = parseTrustedYoutubeUri(rawText) ?: return null
+        val host = uri.host?.lowercase()?.trimEnd('.') ?: return null
+        val path = uri.path.orEmpty()
+        val query = uri.rawQuery.orEmpty()
+
+        val candidate = when {
+            host == "youtu.be" -> path.trimStart('/').substringBefore('/')
+            path.startsWith("/shorts/") -> path.removePrefix("/shorts/").substringBefore('/')
+            path.startsWith("/live/") -> path.removePrefix("/live/").substringBefore('/')
+            path.startsWith("/embed/") -> path.removePrefix("/embed/").substringBefore('/')
+            else -> Regex("(?:^|&)v=([A-Za-z0-9_-]{11})(?:&|$)").find(query)?.groupValues?.getOrNull(1)
+        }?.trim()
+
+        return if (!candidate.isNullOrBlank() && STRICT_YT_VIDEO_RE.matches(candidate)) candidate else null
+    }
+
+    fun extractPlaylistIdFromSharedText(rawText: String?): String? {
+        val uri = parseTrustedYoutubeUri(rawText) ?: return null
+        val query = uri.rawQuery.orEmpty()
+        val listId = Regex("(?:^|&)list=([A-Za-z0-9_-]{2,80})(?:&|$)").find(query)?.groupValues?.getOrNull(1)
+        return if (isValidBrowseId(listId)) listId else null
     }
 }

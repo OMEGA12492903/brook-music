@@ -199,6 +199,108 @@ class YTMusicApi(private val authStore: AuthStore) {
         return results
     }
 
+    /**
+     * Sugerencias en vivo al escribir en el buscador (0 cookies, respuesta acotada).
+     */
+    suspend fun getSearchSuggestions(query: String): List<String> = withContext(Dispatchers.IO) {
+        val q = query.trim().take(120)
+        if (q.length < 2) return@withContext emptyList()
+        val payload = buildJsonObject {
+            put("context", webRemixContext())
+            put("input", q)
+        }
+        val root = postWebRemix("music/get_search_suggestions", payload, useAuth = false)
+            ?: return@withContext emptyList()
+        val contents = root.arr("contents") ?: return@withContext emptyList()
+        val out = mutableListOf<String>()
+        val seen = HashSet<String>()
+        for (sec in contents) {
+            val items = sec.asObj()?.obj("searchSuggestionsSectionRenderer")?.arr("contents") ?: continue
+            for (item in items) {
+                val sr = item.asObj()?.obj("searchSuggestionRenderer") ?: continue
+                val txt = runsText(sr.obj("suggestion"))
+                    .replace(Regex("[\\r\\n\\u0000-\\u001F]"), "")
+                    .trim()
+                    .take(100)
+                if (txt.isNotEmpty() && seen.add(txt.lowercase())) {
+                    out.add(txt)
+                    if (out.size >= 7) return@withContext out
+                }
+            }
+        }
+        out
+    }
+
+    /**
+     * Resuelve título, artista, duración y carátula a partir de un videoId compartido (Compartir -> Brook).
+     */
+    suspend fun fetchTrackByVideoId(videoId: String): Track? = withContext(Dispatchers.IO) {
+        if (!SecurityValidators.isValidVideoId(videoId)) return@withContext null
+        val firstVd = getOrFetchVisitorData(forceRefresh = false)
+        fetchTrackDetailsWithVd(videoId, firstVd)?.let { return@withContext it }
+        val freshVd = getOrFetchVisitorData(forceRefresh = true)
+        if (freshVd != null && freshVd != firstVd) {
+            return@withContext fetchTrackDetailsWithVd(videoId, freshVd)
+        }
+        null
+    }
+
+    private fun fetchTrackDetailsWithVd(videoId: String, vd: String?): Track? {
+        val payload = buildJsonObject {
+            putJsonObject("context") {
+                putJsonObject("client") {
+                    put("clientName", "VISIONOS")
+                    put("clientVersion", VISIONOS_CLIENT_VERSION)
+                    put("deviceMake", "Apple")
+                    put("deviceModel", "RealityDevice17,1")
+                    put("osName", "visionOS")
+                    put("osVersion", "26.5.23O471")
+                    put("hl", "es")
+                    put("gl", "ES")
+                    if (!vd.isNullOrBlank()) put("visitorData", vd)
+                }
+            }
+            put("videoId", videoId)
+            put("contentCheckOk", true)
+            put("racyCheckOk", true)
+        }
+        val reqBuilder = Request.Builder()
+            .url("https://www.youtube.com/youtubei/v1/player?prettyPrint=false")
+            .header("User-Agent", VISIONOS_UA)
+            .header("Content-Type", "application/json")
+            .header("X-YouTube-Client-Name", "101")
+            .header("X-YouTube-Client-Version", VISIONOS_CLIENT_VERSION)
+            .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
+        if (!vd.isNullOrBlank()) reqBuilder.header("X-Goog-Visitor-Id", vd)
+
+        return try {
+            apiHttpClient.newCall(reqBuilder.build()).execute().use { resp ->
+                if (!resp.isSuccessful) return null
+                val bodyTxt = readBoundedBody(resp) ?: return null
+                val root = json.parseToJsonElement(bodyTxt).jsonObject
+                val details = root.obj("videoDetails") ?: return null
+                val title = details.str("title").orEmpty().ifBlank { "Canción de YouTube" }
+                val rawAuthor = details.str("author").orEmpty()
+                val artist = rawAuthor.removeSuffix(" - Topic").trim().ifBlank { "YouTube Music" }
+                val durSec = details.str("lengthSeconds")?.toIntOrNull()?.coerceIn(0, 86_400) ?: 0
+                val thumb = lastThumbUrl(details.obj("thumbnail")?.arr("thumbnails"))
+                    .ifBlank { "https://i.ytimg.com/vi/$videoId/hqdefault.jpg" }
+                SecurityValidators.sanitizeTrack(
+                    Track(
+                        id = videoId,
+                        title = title,
+                        artist = artist,
+                        duration = durSec,
+                        durationText = if (durSec > 0) SecurityValidators.fmtDuration(durSec) else "",
+                        thumb = thumb,
+                    )
+                )
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     suspend fun getRadio(videoId: String, limit: Int = 25): List<Track> = withContext(Dispatchers.IO) {
         if (!SecurityValidators.isValidVideoId(videoId)) return@withContext emptyList()
         val payload = buildJsonObject {
@@ -782,7 +884,7 @@ class YTMusicApi(private val authStore: AuthStore) {
     companion object {
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
         private val ALLOWED_API_HOSTS = setOf("music.youtube.com", "www.youtube.com")
-        private val ALLOWED_ENDPOINTS = setOf("search", "next", "browse")
+        private val ALLOWED_ENDPOINTS = setOf("search", "next", "browse", "music/get_search_suggestions")
         private const val SONGS_FILTER_PARAMS = "EgWKAQIIAWoKEAkQBRAKEAMQBA%3D%3D"
         private const val STREAM_CACHE_TTL_MS = 15 * 60 * 1000L
         private const val VISITOR_TTL_MS = 25 * 60 * 1000L

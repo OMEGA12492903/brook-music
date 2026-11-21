@@ -22,6 +22,13 @@ import com.noctalia.music.MainActivity
 import com.noctalia.music.NoctaliaMusicApp
 import com.noctalia.music.data.SecurityValidators
 import com.noctalia.music.data.YTMusicApi
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import java.io.File
 
 /**
@@ -35,6 +42,7 @@ class NoctaliaPlaybackService : MediaSessionService() {
 
     private var mediaSession: MediaSession? = null
     private var exoPlayer: ExoPlayer? = null
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     @OptIn(UnstableApi::class)
     override fun onCreate() {
@@ -59,6 +67,18 @@ class NoctaliaPlaybackService : MediaSessionService() {
             .build()
 
         exoPlayer = player
+        player.skipSilenceEnabled = app.audioEffects.state.value.skipSilenceEnabled
+        serviceScope.launch {
+            app.audioEffects.state
+                .map { it.skipSilenceEnabled }
+                .distinctUntilChanged()
+                .collect { enabled ->
+                    try {
+                        player.skipSilenceEnabled = enabled
+                    } catch (_: Throwable) {
+                    }
+                }
+        }
         if (player.audioSessionId > 0) {
             app.audioEffects.attachToSession(player.audioSessionId)
         }
@@ -190,6 +210,7 @@ class NoctaliaPlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        serviceScope.cancel()
         try { NoctaliaMusicApp.instance.audioEffects.release() } catch (_: Exception) {}
         mediaSession?.run {
             release()

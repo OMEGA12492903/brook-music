@@ -22,6 +22,10 @@ data class AudioFxState(
     val bassBoostStrength: Int = 0, // 0..1000
     val normalizeVolume: Boolean = true,
     val sponsorBlockEnabled: Boolean = true,
+    val skipSilenceEnabled: Boolean = false,
+    val smoothFadeEnabled: Boolean = true,
+    val playbackSpeed: Float = 1.0f, // 0.5..2.0
+    val playbackPitch: Float = 1.0f, // 0.6..1.4
     val attached: Boolean = false,
 )
 
@@ -81,6 +85,20 @@ class AudioEffectsController {
 
     fun setSponsorBlock(enabled: Boolean) {
         _state.update { it.copy(sponsorBlockEnabled = enabled) }
+    }
+
+    fun setSkipSilence(enabled: Boolean) {
+        _state.update { it.copy(skipSilenceEnabled = enabled) }
+    }
+
+    fun setSmoothFade(enabled: Boolean) {
+        _state.update { it.copy(smoothFadeEnabled = enabled) }
+    }
+
+    fun setSpeedAndPitch(speed: Float, pitch: Float) {
+        val s = speed.coerceIn(0.5f, 2.0f)
+        val p = pitch.coerceIn(0.6f, 1.4f)
+        _state.update { it.copy(playbackSpeed = s, playbackPitch = p) }
     }
 
     @Synchronized

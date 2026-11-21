@@ -7,6 +7,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
+import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.session.MediaController
@@ -68,7 +69,17 @@ class MusicPlayerController(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     private val _state = MutableStateFlow(
-        PlayerUiState(autoRadio = library.state.value.settings.autoRadio)
+        run {
+            val lib = library.state.value
+            val snap = lib.lastSession
+            PlayerUiState(
+                currentTrack = snap?.track,
+                positionMs = snap?.positionMs ?: 0L,
+                durationMs = (snap?.track?.duration ?: 0) * 1000L,
+                queue = snap?.queue.orEmpty(),
+                autoRadio = lib.settings.autoRadio,
+            )
+        }
     )
     val state: StateFlow<PlayerUiState> = _state.asStateFlow()
 
@@ -78,8 +89,15 @@ class MusicPlayerController(
     private var lyricsJob: Job? = null
     private var sponsorJob: Job? = null
     private var sleepJob: Job? = null
+    private var prefetchJob: Job? = null
+    private var fadeJob: Job? = null
     private val history = ArrayDeque<Track>()
     private var retriedCurrent = false
+    private var isFadingOutToPause = false
+    private var prefetchedTrackId: String? = null
+    private var countedPlayForTrackId: String? = null
+    private var listeningAccumMs: Long = 0L
+    private var lastSnapshotSavedMs: Long = 0L
 
     private var activeSkipSegments: List<SkipSegment> = emptyList()
     private val skippedSegmentKeys = HashSet<String>()
@@ -87,6 +105,9 @@ class MusicPlayerController(
     private val playerListener = object : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             _state.update { it.copy(isPlaying = isPlaying) }
+            if (!isPlaying) {
+                persistCurrentSnapshot()
+            }
             BrookWidgetProvider.updateAllWidgets(context)
         }
 
@@ -98,6 +119,7 @@ class MusicPlayerController(
                     val dur = ctrl.duration.takeIf { it > 0 } ?: (_state.value.currentTrack?.duration?.times(1000L) ?: 0L)
                     _state.update { it.copy(isLoading = false, durationMs = dur, errorMsg = null) }
                     BrookWidgetProvider.updateAllWidgets(context)
+                    prefetchNextInQueue()
                 }
                 Player.STATE_ENDED -> {
                     if (_state.value.sleepEndOfTrack) {
@@ -156,8 +178,99 @@ class MusicPlayerController(
     }
 
     init {
+        val st = library.state.value.settings
+        audioEffects.setSkipSilence(st.skipSilence)
+        audioEffects.setSmoothFade(st.smoothFade)
         connectController()
         startPositionTicker()
+    }
+
+    private fun applySpeedPitchTo(ctrl: MediaController) {
+        val fx = audioEffects.state.value
+        try {
+            ctrl.playbackParameters = PlaybackParameters(fx.playbackSpeed, fx.playbackPitch)
+        } catch (_: Throwable) {
+        }
+    }
+
+    fun setPlaybackSpeedPitch(speed: Float, pitch: Float) {
+        audioEffects.setSpeedAndPitch(speed, pitch)
+        mediaController?.takeIf { it.isConnected }?.let { applySpeedPitchTo(it) }
+    }
+
+    fun setSkipSilence(enabled: Boolean) {
+        audioEffects.setSkipSilence(enabled)
+        library.updateSkipSilence(enabled)
+    }
+
+    fun setSmoothFade(enabled: Boolean) {
+        audioEffects.setSmoothFade(enabled)
+        library.updateSmoothFade(enabled)
+    }
+
+    private fun persistCurrentSnapshot() {
+        val st = _state.value
+        val cur = st.currentTrack ?: return
+        library.savePlaybackSnapshot(cur, st.positionMs, st.queue)
+        lastSnapshotSavedMs = System.currentTimeMillis()
+    }
+
+    private fun prefetchNextInQueue() {
+        val next = _state.value.queue.firstOrNull() ?: return
+        if (next.id == prefetchedTrackId || offlineCache.isCached(next.id)) return
+        prefetchedTrackId = next.id
+        prefetchJob?.cancel()
+        prefetchJob = scope.launch {
+            try {
+                api.resolveStreamUrl(next.id, forceRefresh = false, preferHls = false)
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
+    private fun fadeInVolume(ctrl: MediaController) {
+        fadeJob?.cancel()
+        isFadingOutToPause = false
+        if (!audioEffects.state.value.smoothFadeEnabled) {
+            ctrl.volume = 1f
+            return
+        }
+        fadeJob = scope.launch {
+            try {
+                val steps = 8
+                for (i in 1..steps) {
+                    if (!ctrl.isConnected) return@launch
+                    ctrl.volume = i.toFloat() / steps.toFloat()
+                    delay(30L)
+                }
+            } finally {
+                if (ctrl.isConnected) ctrl.volume = 1f
+            }
+        }
+    }
+
+    private fun fadeOutAndPause(ctrl: MediaController) {
+        fadeJob?.cancel()
+        if (!audioEffects.state.value.smoothFadeEnabled) {
+            isFadingOutToPause = false
+            ctrl.pause()
+            ctrl.volume = 1f
+            return
+        }
+        isFadingOutToPause = true
+        fadeJob = scope.launch {
+            try {
+                for (i in 6 downTo 1) {
+                    if (!ctrl.isConnected || !ctrl.isPlaying) break
+                    ctrl.volume = i / 7f
+                    delay(28L)
+                }
+                if (ctrl.isConnected) ctrl.pause()
+            } finally {
+                isFadingOutToPause = false
+                if (ctrl.isConnected) ctrl.volume = 1f
+            }
+        }
     }
 
     private fun connectController() {
@@ -167,6 +280,7 @@ class MusicPlayerController(
                 val ctrl = MediaController.Builder(context, token).buildAsync().await()
                 mediaController = ctrl
                 ctrl.addListener(playerListener)
+                applySpeedPitchTo(ctrl)
             } catch (_: Throwable) {
             }
         }
@@ -184,6 +298,7 @@ class MusicPlayerController(
             val ctrl = MediaController.Builder(context, token).buildAsync().await()
             mediaController = ctrl
             ctrl.addListener(playerListener)
+            applySpeedPitchTo(ctrl)
             ctrl
         } catch (_: Throwable) {
             null
@@ -194,10 +309,11 @@ class MusicPlayerController(
         scope.launch {
             while (isActive) {
                 val ctrl = mediaController
-                if (ctrl != null && _state.value.currentTrack != null) {
+                val curTrack = _state.value.currentTrack
+                if (ctrl != null && curTrack != null && ctrl.mediaItemCount > 0) {
                     val pos = ctrl.currentPosition.coerceAtLeast(0L)
                     val dur = ctrl.duration.takeIf { it > 0 }
-                        ?: (_state.value.currentTrack?.duration?.times(1000L) ?: 0L)
+                        ?: (curTrack.duration * 1000L)
 
                     // SponsorBlock: saltar intros/segmentos no musicales automáticamente
                     if (ctrl.isPlaying && audioEffects.state.value.sponsorBlockEnabled && activeSkipSegments.isNotEmpty()) {
@@ -214,6 +330,29 @@ class MusicPlayerController(
                                 delay(2600L)
                                 _state.update { it.copy(sponsorSkippedNotice = null) }
                             }
+                        }
+                    }
+
+                    // Brook Stats locales + guardado periódico de sesión + pre-carga a 20s del final
+                    if (ctrl.isPlaying) {
+                        listeningAccumMs += 280L
+                        if (countedPlayForTrackId != curTrack.id && listeningAccumMs >= 5_000L) {
+                            countedPlayForTrackId = curTrack.id
+                            library.recordTrackPlayStat(curTrack, incrementPlayCount = true, addSeconds = 5L)
+                            listeningAccumMs = 0L
+                        } else if (listeningAccumMs >= 10_000L) {
+                            library.recordTrackPlayStat(curTrack, incrementPlayCount = false, addSeconds = 10L)
+                            listeningAccumMs = 0L
+                        }
+
+                        if (dur > 0L && (dur - pos) in 1L..20_000L) {
+                            prefetchNextInQueue()
+                        }
+
+                        val now = System.currentTimeMillis()
+                        if (now - lastSnapshotSavedMs >= 8_000L) {
+                            library.savePlaybackSnapshot(curTrack, pos, _state.value.queue)
+                            lastSnapshotSavedMs = now
                         }
                     }
 
@@ -235,6 +374,7 @@ class MusicPlayerController(
         pushHistory: Boolean = true,
         forceFreshUrl: Boolean = false,
         preferHls: Boolean = false,
+        startPositionMs: Long = 0L,
     ) {
         val clean = SecurityValidators.sanitizeTrack(track) ?: return
         val prev = _state.value.currentTrack
@@ -245,14 +385,19 @@ class MusicPlayerController(
 
         library.recordRecent(clean)
         if (!forceFreshUrl) retriedCurrent = false
+        if (prev?.id != clean.id) {
+            countedPlayForTrackId = null
+            listeningAccumMs = 0L
+        }
         activeSkipSegments = emptyList()
         skippedSegmentKeys.clear()
+        val initialPos = startPositionMs.coerceAtLeast(0L)
 
         _state.update {
             it.copy(
                 currentTrack = clean,
                 isLoading = true,
-                positionMs = 0L,
+                positionMs = initialPos,
                 durationMs = clean.duration * 1000L,
                 lyrics = LyricsResult(),
                 loadingLyrics = true,
@@ -260,6 +405,8 @@ class MusicPlayerController(
                 errorMsg = null,
             )
         }
+        library.savePlaybackSnapshot(clean, initialPos, _state.value.queue)
+        lastSnapshotSavedMs = System.currentTimeMillis()
         BrookWidgetProvider.updateAllWidgets(context)
 
         // Cargar letras sincronizadas en paralelo
@@ -348,10 +495,20 @@ class MusicPlayerController(
             val item = itemBuilder.build()
 
             _state.update { it.copy(qualityLabel = qualityLabel) }
-            ctrl.volume = 1f
-            ctrl.setMediaItem(item)
+            fadeJob?.cancel()
+            isFadingOutToPause = false
+            applySpeedPitchTo(ctrl)
+            ctrl.volume = if (audioEffects.state.value.smoothFadeEnabled) 0.1f else 1f
+            val safeStart = if (clean.duration > 0 && initialPos >= clean.duration * 1000L - 3000L) 0L else initialPos
+            if (safeStart > 1000L) {
+                ctrl.setMediaItem(item, safeStart)
+            } else {
+                ctrl.setMediaItem(item)
+            }
             ctrl.prepare()
             ctrl.play()
+            fadeInVolume(ctrl)
+            prefetchNextInQueue()
         }
     }
 
@@ -373,14 +530,27 @@ class MusicPlayerController(
         }
         scope.launch {
             val ctrl = ensureController() ?: return@launch
-            if (ctrl.isPlaying) {
-                ctrl.pause()
-            } else {
+            if (isFadingOutToPause) {
+                fadeJob?.cancel()
+                isFadingOutToPause = false
                 ctrl.volume = 1f
+                if (!ctrl.isPlaying) ctrl.play()
+                return@launch
+            }
+            if (ctrl.isPlaying) {
+                fadeOutAndPause(ctrl)
+            } else {
+                fadeJob?.cancel()
+                applySpeedPitchTo(ctrl)
                 if (ctrl.playbackState == Player.STATE_IDLE || ctrl.playbackState == Player.STATE_ENDED || ctrl.mediaItemCount == 0) {
-                    _state.value.currentTrack?.let { playTrack(it, pushHistory = false) }
+                    val resumePos = if (ctrl.mediaItemCount == 0) _state.value.positionMs else 0L
+                    _state.value.currentTrack?.let {
+                        playTrack(it, pushHistory = false, startPositionMs = resumePos)
+                    }
                 } else {
+                    ctrl.volume = if (audioEffects.state.value.smoothFadeEnabled) 0.1f else 1f
                     ctrl.play()
+                    fadeInVolume(ctrl)
                 }
             }
         }
@@ -458,14 +628,19 @@ class MusicPlayerController(
                 _state.update { it.copy(sleepRemainingSec = rem) }
             }
             // Fade-out suave de 2 segundos antes de pausar
+            fadeJob?.cancel()
+            isFadingOutToPause = false
             val ctrl = mediaController
-            if (ctrl != null && ctrl.isPlaying) {
+            if (ctrl != null && ctrl.isConnected && ctrl.isPlaying) {
                 for (step in 9 downTo 1) {
+                    if (!ctrl.isConnected) break
                     ctrl.volume = step / 10f
                     delay(200L)
                 }
-                ctrl.pause()
-                ctrl.volume = 1f
+                if (ctrl.isConnected) {
+                    ctrl.pause()
+                    ctrl.volume = 1f
+                }
             }
             _state.update { it.copy(sleepRemainingSec = null, sleepEndOfTrack = false) }
         }
@@ -488,6 +663,8 @@ class MusicPlayerController(
     fun addToQueue(track: Track) {
         val clean = SecurityValidators.sanitizeTrack(track) ?: return
         _state.update { it.copy(queue = it.queue + clean) }
+        persistCurrentSnapshot()
+        prefetchNextInQueue()
     }
 
     fun addPlayNext(track: Track) {
@@ -495,6 +672,21 @@ class MusicPlayerController(
         _state.update { st ->
             val filtered = st.queue.filterNot { it.id == clean.id }
             st.copy(queue = listOf(clean) + filtered)
+        }
+        persistCurrentSnapshot()
+        prefetchNextInQueue()
+    }
+
+    fun moveQueueItem(fromIndex: Int, toIndex: Int) {
+        val curQueue = _state.value.queue
+        if (fromIndex !in curQueue.indices || toIndex !in curQueue.indices || fromIndex == toIndex) return
+        val updated = curQueue.toMutableList()
+        val moved = updated.removeAt(fromIndex)
+        updated.add(toIndex, moved)
+        _state.update { it.copy(queue = updated) }
+        persistCurrentSnapshot()
+        if (fromIndex == 0 || toIndex == 0) {
+            prefetchNextInQueue()
         }
     }
 
@@ -520,10 +712,13 @@ class MusicPlayerController(
         if (index !in curQueue.indices) return
         val rest = curQueue.toMutableList().apply { removeAt(index) }
         _state.update { it.copy(queue = rest) }
+        persistCurrentSnapshot()
+        if (index == 0) prefetchNextInQueue()
     }
 
     fun clearQueue() {
         _state.update { it.copy(queue = emptyList()) }
+        persistCurrentSnapshot()
     }
 
     fun toggleShuffle() {
@@ -562,6 +757,8 @@ class MusicPlayerController(
                     playTrack(fresh.first(), pushHistory = true)
                 } else {
                     _state.update { it.copy(queue = it.queue + fresh) }
+                    persistCurrentSnapshot()
+                    prefetchNextInQueue()
                 }
             } else if (playImmediately) {
                 _state.update { it.copy(isLoading = false) }

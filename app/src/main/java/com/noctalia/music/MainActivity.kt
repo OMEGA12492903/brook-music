@@ -1,9 +1,12 @@
 package com.noctalia.music
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
@@ -86,28 +89,68 @@ import com.noctalia.music.ui.theme.NoctaliaTheme
 import com.noctalia.music.ui.theme.SyncDynamicBrookTheme
 
 class MainActivity : ComponentActivity() {
+    private val _pendingSharedText = MutableStateFlow<String?>(null)
+    private val pendingSharedText = _pendingSharedText.asStateFlow()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
         )
+        if (savedInstanceState == null) {
+            extractIncomingSharedText(intent)?.let { _pendingSharedText.value = it }
+        }
         setContent {
             NoctaliaTheme {
-                NoctaliaRootScreen()
+                NoctaliaRootScreen(
+                    pendingSharedFlow = pendingSharedText,
+                    onConsumeShared = { _pendingSharedText.value = null },
+                )
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        extractIncomingSharedText(intent)?.let { _pendingSharedText.value = it }
+    }
+
+    private fun extractIncomingSharedText(intent: Intent?): String? {
+        if (intent == null) return null
+        val raw = when (intent.action) {
+            Intent.ACTION_SEND -> if (intent.type?.startsWith("text/") == true) {
+                intent.getStringExtra(Intent.EXTRA_TEXT)
+            } else {
+                null
+            }
+            Intent.ACTION_VIEW -> intent.dataString
+            else -> null
+        }
+        return raw?.trim()?.take(2048)?.takeIf { it.isNotEmpty() }
     }
 }
 
 @Composable
-private fun NoctaliaRootScreen(vm: NoctaliaViewModel = viewModel()) {
+private fun NoctaliaRootScreen(
+    pendingSharedFlow: kotlinx.coroutines.flow.StateFlow<String?>,
+    onConsumeShared: () -> Unit,
+    vm: NoctaliaViewModel = viewModel(),
+) {
     val ctx = LocalContext.current
     val ui by vm.ui.collectAsStateWithLifecycle()
     val player by vm.playerState.collectAsStateWithLifecycle()
     val library by vm.libraryState.collectAsStateWithLifecycle()
     val offline by vm.offlineState.collectAsStateWithLifecycle()
     val audioFx by vm.audioFxState.collectAsStateWithLifecycle()
+    val pendingShared by pendingSharedFlow.collectAsStateWithLifecycle()
+
+    LaunchedEffect(pendingShared) {
+        val shared = pendingShared ?: return@LaunchedEffect
+        onConsumeShared()
+        vm.handleSharedYoutubeText(shared)
+    }
 
     var currentNav by remember { mutableStateOf("home") }
     var libraryInitialTab by remember { mutableStateOf("favs") }
@@ -257,13 +300,17 @@ private fun NoctaliaRootScreen(vm: NoctaliaViewModel = viewModel()) {
                     library = library,
                     onQueryChange = { q, imm -> vm.onSearchQueryChanged(q, immediate = imm) },
                     onModeChange = { vm.setSearchMode(it) },
-                    onPlayTrack = { vm.player.playTrack(it) },
+                    onPlayTrack = {
+                        vm.clearSearchSuggestions()
+                        vm.player.playTrack(it)
+                    },
                     onAddQueue = {
                         vm.player.addToQueue(it)
                         vm.showMessage("Añadida «${it.title}» a la cola")
                     },
                     onToggleFavorite = { vm.library.toggleFavorite(it) },
                     onMoreTrackClick = { actionSheetTrack = it },
+                    onClearSearchHistory = { vm.library.clearSearchHistory() },
                 )
 
                 "library" -> LibraryScreen(
@@ -304,6 +351,14 @@ private fun NoctaliaRootScreen(vm: NoctaliaViewModel = viewModel()) {
                     onSelectBgStyle = { vm.library.updatePlayerBgStyle(it.id) },
                     onToggleBgUseCoverColors = { vm.library.updatePlayerBgUseCoverColors(it) },
                     onToggleDynamicAppTheme = { vm.library.updateDynamicAppTheme(it) },
+                    onOpenArtistFromStats = { artist ->
+                        currentNav = "search"
+                        vm.onSearchQueryChanged(artist, immediate = true, mode = "artist")
+                    },
+                    onClearStats = {
+                        vm.library.clearStats()
+                        vm.showMessage("Estadísticas reiniciadas.")
+                    },
                     onCheckUpdate = { vm.checkAppUpdate() },
                     onDownloadUpdate = { vm.downloadAndInstallUpdate() },
                     onOpenReleases = { vm.openReleasesPage() },
@@ -416,11 +471,15 @@ private fun NoctaliaRootScreen(vm: NoctaliaViewModel = viewModel()) {
                 onToggleAutoRadio = { vm.player.setAutoRadio(it) },
                 onPlayQueueIndex = { vm.player.playFromQueue(it) },
                 onRemoveQueueIndex = { vm.player.removeFromQueue(it) },
+                onMoveQueueItem = { from, to -> vm.player.moveQueueItem(from, to) },
                 onClearQueue = { vm.player.clearQueue() },
                 onSelectEqPreset = { vm.audioEffects.setPreset(it) },
                 onBassBoostChange = { vm.audioEffects.setBassBoost(it) },
                 onToggleNormalize = { vm.audioEffects.setNormalizeVolume(it) },
                 onToggleSponsorBlock = { vm.audioEffects.setSponsorBlock(it) },
+                onToggleSkipSilence = { vm.player.setSkipSilence(it) },
+                onToggleSmoothFade = { vm.player.setSmoothFade(it) },
+                onSetSpeedPitch = { spd, ptc -> vm.player.setPlaybackSpeedPitch(spd, ptc) },
                 onSetSleepMinutes = { vm.player.setSleepTimerMinutes(it) },
                 onSetSleepEndOfTrack = { vm.player.setSleepAtEndOfTrack() },
                 onCancelSleep = { vm.player.cancelSleepTimer() },

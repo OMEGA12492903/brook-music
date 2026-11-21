@@ -31,6 +31,7 @@ data class MainUiState(
     val loadingHome: Boolean = false,
     val searchQuery: String = "",
     val searchMode: String = "songs", // "songs" | "all" | "artist"
+    val searchSuggestions: List<String> = emptyList(),
     val searchResults: List<Track> = emptyList(),
     val searching: Boolean = false,
     val checkingUpdate: Boolean = false,
@@ -65,6 +66,7 @@ class NoctaliaViewModel : ViewModel() {
     val ui: StateFlow<MainUiState> = _ui.asStateFlow()
 
     private var searchJob: Job? = null
+    private var suggestJob: Job? = null
 
     init {
         refreshHome()
@@ -93,16 +95,71 @@ class NoctaliaViewModel : ViewModel() {
         val nextMode = mode ?: _ui.value.searchMode
         _ui.update { it.copy(searchQuery = query, searchMode = nextMode) }
         searchJob?.cancel()
+        suggestJob?.cancel()
         val trimmed = query.trim()
         if (trimmed.isEmpty()) {
-            _ui.update { it.copy(searchResults = emptyList(), searching = false) }
+            _ui.update { it.copy(searchResults = emptyList(), searchSuggestions = emptyList(), searching = false) }
             return
+        }
+        if (immediate) {
+            _ui.update { it.copy(searchSuggestions = emptyList()) }
+            library.recordSearchQuery(trimmed)
+        } else if (trimmed.length >= 2) {
+            suggestJob = viewModelScope.launch {
+                delay(170L)
+                val sugs = api.getSearchSuggestions(trimmed)
+                if (_ui.value.searchQuery.trim() == trimmed) {
+                    _ui.update { it.copy(searchSuggestions = sugs) }
+                }
+            }
         }
         searchJob = viewModelScope.launch {
             if (!immediate) delay(420L)
             _ui.update { it.copy(searching = true) }
             val items = api.search(trimmed, limit = 20, mode = nextMode)
             _ui.update { it.copy(searchResults = items, searching = false) }
+        }
+    }
+
+    fun clearSearchSuggestions() {
+        _ui.update { it.copy(searchSuggestions = emptyList()) }
+    }
+
+    /**
+     * Procesa enlaces compartidos desde YouTube / YouTube Music / WhatsApp / Navegador (`Compartir -> Brook`).
+     */
+    fun handleSharedYoutubeText(rawText: String?) {
+        val videoId = SecurityValidators.extractVideoIdFromSharedText(rawText)
+        val playlistId = SecurityValidators.extractPlaylistIdFromSharedText(rawText)
+        when {
+            videoId != null -> {
+                showMessage("Abriendo canción de YouTube en Brook...")
+                viewModelScope.launch {
+                    val resolvedTrack = api.fetchTrackByVideoId(videoId) ?: Track(
+                        id = videoId,
+                        title = "Canción compartida",
+                        artist = "YouTube Music",
+                        thumb = "https://i.ytimg.com/vi/$videoId/hqdefault.jpg",
+                    )
+                    player.playTrack(resolvedTrack, pushHistory = true)
+                    showMessage("Reproduciendo «${resolvedTrack.title}»")
+                }
+            }
+            playlistId != null -> {
+                showMessage("Cargando playlist compartida...")
+                viewModelScope.launch {
+                    val (plTitle, tracks) = api.fetchPlaylistWithTitle(playlistId, useAuth = authStore.isLoggedIn())
+                    if (tracks.isEmpty()) {
+                        showMessage("No se pudo abrir la playlist (asegúrate de que sea Pública u Oculta).")
+                    } else {
+                        player.playTrackList(tracks, 0)
+                        showMessage("Reproduciendo «$plTitle» (${tracks.size} canciones)")
+                    }
+                }
+            }
+            !rawText.isNullOrBlank() -> {
+                showMessage("Enlace no reconocido como vídeo o playlist de YouTube.")
+            }
         }
     }
 
