@@ -38,6 +38,7 @@ import com.noctalia.music.ui.components.NoctaliaGlassCard
 import com.noctalia.music.ui.components.NoctaliaPillChip
 import com.noctalia.music.ui.components.TrackCoverImage
 import com.noctalia.music.ui.components.TrackRowItem
+import com.noctalia.music.ui.components.bouncyClick
 import com.noctalia.music.ui.theme.NoctaliaColors
 import java.util.Calendar
 
@@ -110,7 +111,7 @@ fun HomeScreen(
 
                 NoctaliaGlassCard(
                     cornerRadius = 99.dp,
-                    modifier = Modifier.clickable { onOpenLogin() },
+                    modifier = Modifier.bouncyClick(pressedScale = 0.94f) { onOpenLogin() },
                 ) {
                     Row(
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
@@ -168,7 +169,7 @@ fun HomeScreen(
                                     highlighted = player.currentTrack?.id == track.id,
                                     modifier = Modifier
                                         .weight(1f)
-                                        .clickable { onPlayTrack(track) },
+                                        .bouncyClick(pressedScale = 0.96f) { onPlayTrack(track) },
                                 ) {
                                     Row(
                                         modifier = Modifier.padding(6.dp),

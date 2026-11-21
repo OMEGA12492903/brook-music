@@ -1,5 +1,13 @@
 package com.noctalia.music.ui.screens
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -236,7 +244,27 @@ fun LibraryScreen(
             }
         }
 
-        when (activeTab) {
+        val libTabOrder = mapOf("favs" to 0, "playlists" to 1, "account" to 2, "sync" to 3)
+        AnimatedContent(
+            targetState = activeTab,
+            transitionSpec = {
+                val forward = (libTabOrder[targetState] ?: 0) >= (libTabOrder[initialState] ?: 0)
+                val enter = slideInHorizontally(tween(220, easing = FastOutSlowInEasing)) {
+                    if (forward) it / 8 else -it / 8
+                } + fadeIn(tween(200))
+                val exit = slideOutHorizontally(tween(180)) {
+                    if (forward) -it / 10 else it / 10
+                } + fadeOut(tween(150))
+                enter togetherWith exit
+            },
+            modifier = Modifier.weight(1f),
+            label = "library_tab_switch",
+        ) { currentTab ->
+        Column(
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+        when (currentTab) {
             "favs" -> {
                 if (library.favorites.isNotEmpty()) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -784,6 +812,8 @@ fun LibraryScreen(
                     }
                 }
             }
+        }
+        }
         }
     }
 }

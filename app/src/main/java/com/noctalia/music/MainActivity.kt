@@ -11,6 +11,22 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -43,6 +59,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -54,6 +71,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.noctalia.music.ui.NoctaliaViewModel
 import com.noctalia.music.ui.components.NoctaliaBackground
 import com.noctalia.music.ui.components.NoctaliaGlassCard
+import com.noctalia.music.ui.components.bouncyClick
 import com.noctalia.music.ui.screens.FullPlayerOverlay
 import com.noctalia.music.ui.screens.HomeScreen
 import com.noctalia.music.ui.screens.LibraryScreen
@@ -168,13 +186,29 @@ private fun NoctaliaRootScreen(vm: NoctaliaViewModel = viewModel()) {
 
     val favIds = remember(library.favorites) { library.favorites.map { it.id }.toSet() }
 
+    val navOrder = mapOf("home" to 0, "search" to 1, "library" to 2)
+
     NoctaliaBackground {
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding(),
         ) {
-            when (currentNav) {
+            AnimatedContent(
+                targetState = currentNav,
+                transitionSpec = {
+                    val forward = (navOrder[targetState] ?: 0) >= (navOrder[initialState] ?: 0)
+                    val enter = slideInHorizontally(tween(240, easing = FastOutSlowInEasing)) {
+                        if (forward) it / 8 else -it / 8
+                    } + fadeIn(tween(220))
+                    val exit = slideOutHorizontally(tween(200, easing = FastOutSlowInEasing)) {
+                        if (forward) -it / 10 else it / 10
+                    } + fadeOut(tween(170))
+                    enter togetherWith exit
+                },
+                label = "main_nav_transition",
+            ) { navTab ->
+            when (navTab) {
                 "home" -> HomeScreen(
                     ui = ui,
                     player = player,
@@ -258,6 +292,7 @@ private fun NoctaliaRootScreen(vm: NoctaliaViewModel = viewModel()) {
                     onOpenReleases = { vm.openReleasesPage() },
                 )
             }
+            }
 
             // Snackbar flotante
             SnackbarHost(
@@ -267,7 +302,7 @@ private fun NoctaliaRootScreen(vm: NoctaliaViewModel = viewModel()) {
                     .padding(top = 8.dp, start = 16.dp, end = 16.dp),
             )
 
-            // Mini reproductor + Dock inferior flotante estilo Noctalia
+            // Mini reproductor (entra animado al poner una canción) + Dock inferior flotante estilo Noctalia
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -276,7 +311,17 @@ private fun NoctaliaRootScreen(vm: NoctaliaViewModel = viewModel()) {
                     .padding(horizontal = 14.dp, vertical = 10.dp),
             ) {
                 androidx.compose.foundation.layout.Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (player.currentTrack != null) {
+                    AnimatedVisibility(
+                        visible = player.currentTrack != null,
+                        enter = slideInVertically(
+                            animationSpec = spring(dampingRatio = 0.72f, stiffness = 360f),
+                            initialOffsetY = { it },
+                        ) + fadeIn(tween(220)) + scaleIn(tween(240), initialScale = 0.94f),
+                        exit = slideOutVertically(
+                            animationSpec = tween(220, easing = FastOutSlowInEasing),
+                            targetOffsetY = { it },
+                        ) + fadeOut(tween(180)) + scaleOut(tween(200), targetScale = 0.94f),
+                    ) {
                         MiniPlayerBar(
                             player = player,
                             onExpand = { fullPlayerOpen = true },
@@ -318,8 +363,18 @@ private fun NoctaliaRootScreen(vm: NoctaliaViewModel = viewModel()) {
             }
         }
 
-        // Reproductor a pantalla completa
-        if (fullPlayerOpen && player.currentTrack != null) {
+        // Reproductor a pantalla completa (sube y baja con físicas suaves estilo Noctalia)
+        AnimatedVisibility(
+            visible = fullPlayerOpen && player.currentTrack != null,
+            enter = slideInVertically(
+                animationSpec = spring(dampingRatio = 0.84f, stiffness = 340f),
+                initialOffsetY = { it },
+            ) + fadeIn(tween(220)),
+            exit = slideOutVertically(
+                animationSpec = tween(280, easing = FastOutSlowInEasing),
+                targetOffsetY = { it },
+            ) + fadeOut(tween(220)),
+        ) {
             FullPlayerOverlay(
                 player = player,
                 audioFx = audioFx,
@@ -376,11 +431,27 @@ private fun NavDockItem(
     modifier: Modifier = Modifier,
 ) {
     val shape = RoundedCornerShape(99.dp)
+    val bgColor by animateColorAsState(
+        targetValue = if (active) NoctaliaColors.Cyan else Color.Transparent,
+        animationSpec = tween(220, easing = FastOutSlowInEasing),
+        label = "dock_bg",
+    )
+    val contentColor by animateColorAsState(
+        targetValue = if (active) NoctaliaColors.OnCyan else NoctaliaColors.TextMuted,
+        animationSpec = tween(220, easing = FastOutSlowInEasing),
+        label = "dock_fg",
+    )
+    val iconScale by animateFloatAsState(
+        targetValue = if (active) 1.12f else 1f,
+        animationSpec = spring(dampingRatio = 0.55f, stiffness = 480f),
+        label = "dock_icon_scale",
+    )
+
     Row(
         modifier = modifier
             .clip(shape)
-            .background(if (active) NoctaliaColors.Cyan else Color.Transparent)
-            .clickable(onClick = onClick)
+            .background(bgColor)
+            .bouncyClick(pressedScale = 0.93f, onClick = onClick)
             .padding(vertical = 10.dp),
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically,
@@ -388,13 +459,18 @@ private fun NavDockItem(
         Icon(
             imageVector = icon,
             contentDescription = label,
-            tint = if (active) NoctaliaColors.OnCyan else NoctaliaColors.TextMuted,
-            modifier = Modifier.size(19.dp),
+            tint = contentColor,
+            modifier = Modifier
+                .size(19.dp)
+                .graphicsLayer {
+                    scaleX = iconScale
+                    scaleY = iconScale
+                },
         )
         Spacer(Modifier.width(6.dp))
         Text(
             text = label,
-            color = if (active) NoctaliaColors.OnCyan else NoctaliaColors.TextMuted,
+            color = contentColor,
             fontSize = 12.sp,
             fontWeight = if (active) FontWeight.ExtraBold else FontWeight.Bold,
         )

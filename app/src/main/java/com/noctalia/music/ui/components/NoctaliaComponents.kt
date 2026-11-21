@@ -1,11 +1,21 @@
 package com.noctalia.music.ui.components
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -13,6 +23,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -38,6 +50,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -45,6 +58,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -54,6 +68,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
@@ -67,13 +82,61 @@ import com.noctalia.music.data.Track
 import com.noctalia.music.ui.theme.NoctaliaColors
 import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.cos
 import kotlin.math.sin
+
+/**
+ * Efecto táctil de muelle suave al pulsar tarjetas, botones y chips.
+ */
+fun Modifier.bouncyClick(
+    pressedScale: Float = 0.96f,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+): Modifier = composed {
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed && enabled) pressedScale else 1f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessMedium,
+        ),
+        label = "bouncy_scale",
+    )
+    this
+        .graphicsLayer {
+            scaleX = scale
+            scaleY = scale
+        }
+        .clickable(
+            interactionSource = interactionSource,
+            indication = null,
+            enabled = enabled,
+            onClick = onClick,
+        )
+}
 
 @Composable
 fun NoctaliaBackground(
     modifier: Modifier = Modifier,
+    animateHalos: Boolean = true,
     content: @Composable BoxScope.() -> Unit,
 ) {
+    val drift by if (animateHalos) {
+        val infinite = rememberInfiniteTransition(label = "bg_halos")
+        infinite.animateFloat(
+            initialValue = 0f,
+            targetValue = (2.0 * PI).toFloat(),
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 16000, easing = LinearEasing),
+                repeatMode = RepeatMode.Restart,
+            ),
+            label = "halo_drift",
+        )
+    } else {
+        remember { mutableFloatStateOf(0f) }
+    }
+
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -83,33 +146,42 @@ fun NoctaliaBackground(
                 )
             )
     ) {
-        // Halos ambientales cian / magenta / azul idénticos al estilo Noctalia
+        // Halos ambientales cian / magenta / azul con respiración muy sutil estilo Noctalia
         Canvas(modifier = Modifier.fillMaxSize()) {
+            val dx1 = sin(drift) * size.width * 0.045f
+            val dy1 = cos(drift) * size.height * 0.025f
+            val c1 = Offset(size.width * 0.16f + dx1, size.height * 0.08f + dy1)
             drawCircle(
                 brush = Brush.radialGradient(
                     colors = listOf(NoctaliaColors.Pink.copy(alpha = 0.22f), Color.Transparent),
-                    center = Offset(size.width * 0.16f, size.height * 0.08f),
+                    center = c1,
                     radius = size.width * 0.72f,
                 ),
-                center = Offset(size.width * 0.16f, size.height * 0.08f),
+                center = c1,
                 radius = size.width * 0.72f,
             )
+
+            val dx2 = cos(drift * 0.85f) * size.width * 0.045f
+            val dy2 = sin(drift * 0.85f) * size.height * 0.03f
+            val c2 = Offset(size.width * 0.88f + dx2, size.height * 0.16f + dy2)
             drawCircle(
                 brush = Brush.radialGradient(
                     colors = listOf(NoctaliaColors.Cyan.copy(alpha = 0.20f), Color.Transparent),
-                    center = Offset(size.width * 0.88f, size.height * 0.16f),
+                    center = c2,
                     radius = size.width * 0.68f,
                 ),
-                center = Offset(size.width * 0.88f, size.height * 0.16f),
+                center = c2,
                 radius = size.width * 0.68f,
             )
+
+            val c3 = Offset(size.width * 0.5f - dx1 * 0.7f, size.height * 0.92f - dy2 * 0.6f)
             drawCircle(
                 brush = Brush.radialGradient(
                     colors = listOf(NoctaliaColors.Blue.copy(alpha = 0.16f), Color.Transparent),
-                    center = Offset(size.width * 0.5f, size.height * 0.92f),
+                    center = c3,
                     radius = size.width * 0.75f,
                 ),
-                center = Offset(size.width * 0.5f, size.height * 0.92f),
+                center = c3,
                 radius = size.width * 0.75f,
             )
         }
@@ -125,16 +197,24 @@ fun NoctaliaGlassCard(
     highlighted: Boolean = false,
     content: @Composable BoxScope.() -> Unit,
 ) {
-    val bg = when {
-        highlighted -> NoctaliaColors.Cyan.copy(alpha = 0.16f)
-        strong -> NoctaliaColors.GlassStrong
-        else -> NoctaliaColors.Glass
-    }
-    val borderColor = when {
-        highlighted -> NoctaliaColors.CyanGlow.copy(alpha = 0.65f)
-        strong -> NoctaliaColors.BorderCyanStrong
-        else -> NoctaliaColors.BorderCyan
-    }
+    val bg by animateColorAsState(
+        targetValue = when {
+            highlighted -> NoctaliaColors.Cyan.copy(alpha = 0.16f)
+            strong -> NoctaliaColors.GlassStrong
+            else -> NoctaliaColors.Glass
+        },
+        animationSpec = tween(240, easing = FastOutSlowInEasing),
+        label = "glass_bg",
+    )
+    val borderColor by animateColorAsState(
+        targetValue = when {
+            highlighted -> NoctaliaColors.CyanGlow.copy(alpha = 0.65f)
+            strong -> NoctaliaColors.BorderCyanStrong
+            else -> NoctaliaColors.BorderCyan
+        },
+        animationSpec = tween(240, easing = FastOutSlowInEasing),
+        label = "glass_border",
+    )
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(cornerRadius))
@@ -152,18 +232,32 @@ fun NoctaliaPillChip(
     modifier: Modifier = Modifier,
 ) {
     val shape = RoundedCornerShape(99.dp)
+    val chipBg by animateColorAsState(
+        targetValue = if (active) NoctaliaColors.Cyan else NoctaliaColors.Glass,
+        animationSpec = tween(200, easing = FastOutSlowInEasing),
+        label = "chip_bg",
+    )
+    val chipBorder by animateColorAsState(
+        targetValue = if (active) NoctaliaColors.CyanGlow else NoctaliaColors.BorderCyan,
+        animationSpec = tween(200, easing = FastOutSlowInEasing),
+        label = "chip_border",
+    )
+    val chipText by animateColorAsState(
+        targetValue = if (active) NoctaliaColors.OnCyan else NoctaliaColors.TextPrimary,
+        animationSpec = tween(200, easing = FastOutSlowInEasing),
+        label = "chip_text",
+    )
     Surface(
-        modifier = modifier.clip(shape).clickable(onClick = onClick),
+        modifier = modifier
+            .clip(shape)
+            .bouncyClick(pressedScale = 0.93f, onClick = onClick),
         shape = shape,
-        color = if (active) NoctaliaColors.Cyan else NoctaliaColors.Glass,
-        border = BorderStroke(
-            width = 1.dp,
-            color = if (active) NoctaliaColors.CyanGlow else NoctaliaColors.BorderCyan,
-        ),
+        color = chipBg,
+        border = BorderStroke(width = 1.dp, color = chipBorder),
     ) {
         Text(
             text = label,
-            color = if (active) NoctaliaColors.OnCyan else NoctaliaColors.TextPrimary,
+            color = chipText,
             fontSize = 12.sp,
             fontWeight = if (active) FontWeight.ExtraBold else FontWeight.SemiBold,
             maxLines = 1,
@@ -231,12 +325,25 @@ fun TrackRowItem(
     onRemove: (() -> Unit)? = null,
     indexBadge: String? = null,
 ) {
+    val titleColor by animateColorAsState(
+        targetValue = if (isCurrent) NoctaliaColors.CyanGlow else NoctaliaColors.TextPrimary,
+        animationSpec = tween(220),
+        label = "row_title_color",
+    )
+    var favPulse by remember { mutableStateOf(false) }
+    val favScale by animateFloatAsState(
+        targetValue = if (favPulse) 1.32f else 1f,
+        animationSpec = spring(dampingRatio = 0.42f, stiffness = 550f),
+        finishedListener = { favPulse = false },
+        label = "row_fav_scale",
+    )
+
     NoctaliaGlassCard(
         cornerRadius = 16.dp,
         highlighted = isCurrent,
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onPlay),
+            .bouncyClick(pressedScale = 0.975f, onClick = onPlay),
     ) {
         Row(
             modifier = Modifier
@@ -253,12 +360,29 @@ fun TrackRowItem(
                     modifier = Modifier.width(22.dp),
                 )
             }
-            TrackCoverImage(url = track.thumb, size = 48.dp, cornerRadius = 11.dp)
+            Box(contentAlignment = Alignment.Center) {
+                TrackCoverImage(url = track.thumb, size = 48.dp, cornerRadius = 11.dp)
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = isCurrent,
+                    enter = fadeIn(tween(200)) + scaleIn(initialScale = 0.7f),
+                    exit = fadeOut(tween(180)) + scaleOut(targetScale = 0.7f),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(48.dp)
+                            .clip(RoundedCornerShape(11.dp))
+                            .background(Color.Black.copy(alpha = 0.52f)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        NoctaliaMiniEqualizer(isPlaying = true)
+                    }
+                }
+            }
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = track.title,
-                    color = if (isCurrent) NoctaliaColors.CyanGlow else NoctaliaColors.TextPrimary,
+                    color = titleColor,
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
@@ -287,12 +411,23 @@ fun TrackRowItem(
                 }
             }
             if (onToggleFavorite != null) {
-                IconButton(onClick = onToggleFavorite, modifier = Modifier.size(34.dp)) {
+                IconButton(
+                    onClick = {
+                        favPulse = true
+                        onToggleFavorite()
+                    },
+                    modifier = Modifier.size(34.dp),
+                ) {
                     Icon(
                         imageVector = if (isFavorite) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
                         contentDescription = "Favorita",
                         tint = if (isFavorite) NoctaliaColors.CyanGlow else NoctaliaColors.TextDim,
-                        modifier = Modifier.size(19.dp),
+                        modifier = Modifier
+                            .size(19.dp)
+                            .graphicsLayer {
+                                scaleX = favScale
+                                scaleY = favScale
+                            },
                     )
                 }
             }
@@ -338,7 +473,23 @@ fun NoctaliaWaveSeekBar(
     val liveFraction = if (durationMs > 0L) {
         (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
     } else 0f
-    val displayFraction = if (dragging) dragFraction else liveFraction
+    val smoothFraction by animateFloatAsState(
+        targetValue = liveFraction,
+        animationSpec = tween(durationMillis = 260, easing = LinearEasing),
+        label = "seek_smooth",
+    )
+    val displayFraction = if (dragging) dragFraction else smoothFraction
+
+    val animatedAmp by animateFloatAsState(
+        targetValue = if (isPlaying) 9.5f else 1.8f,
+        animationSpec = spring(dampingRatio = 0.72f, stiffness = 260f),
+        label = "wave_amp",
+    )
+    val thumbGlowRadius by animateFloatAsState(
+        targetValue = if (dragging) 22f else 16f,
+        animationSpec = spring(dampingRatio = 0.65f, stiffness = 420f),
+        label = "thumb_glow",
+    )
 
     Canvas(
         modifier = modifier
@@ -388,13 +539,13 @@ fun NoctaliaWaveSeekBar(
             )
         }
 
-        // Parte reproducida (onda sinusoidal cian)
-        val amp = if (isPlaying) 9.5f else 2.2f
+        // Parte reproducida (onda sinusoidal cian con transición suave de amplitud)
+        val amp = animatedAmp
         val path = Path()
         var x = pad
         var first = true
         while (x <= thumbX) {
-            val y = midY + sin(x * 0.065f - (if (isPlaying) phase else 0f)) * amp
+            val y = midY + sin(x * 0.065f - phase) * amp
             if (first) {
                 path.moveTo(x, y)
                 first = false
@@ -409,15 +560,15 @@ fun NoctaliaWaveSeekBar(
             style = Stroke(width = 7f, cap = StrokeCap.Round),
         )
 
-        // Punto indicador blanco brillante
+        // Punto indicador blanco brillante (crece suavemente al arrastrar)
         drawCircle(
             color = NoctaliaColors.CyanGlow.copy(alpha = 0.35f),
-            radius = 16f,
+            radius = thumbGlowRadius,
             center = Offset(thumbX, midY),
         )
         drawCircle(
             color = Color.White,
-            radius = 10f,
+            radius = if (dragging) 12f else 10f,
             center = Offset(thumbX, midY),
         )
     }
