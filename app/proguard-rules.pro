@@ -13,3 +13,6 @@
 -keepclasseswithmembers class com.noctalia.music.data.** {
     kotlinx.serialization.KSerializer serializer(...);
 }
+-keep class com.noctalia.music.ui.NoctaliaViewModel { public <init>(...); }
+-keep class com.noctalia.music.widget.BrookWidgetProvider { *; }
+-keep class com.noctalia.music.player.NoctaliaPlaybackService { *; }

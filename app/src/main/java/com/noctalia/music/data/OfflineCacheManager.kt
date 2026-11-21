@@ -26,14 +26,14 @@ class OfflineCacheManager(
 ) {
     private val dir = File(context.filesDir, "offline_audio").apply { mkdirs() }
 
-    private val _state = MutableStateFlow(scanDisk())
+    private val _state = MutableStateFlow(scanDisk(emptySet()))
     val state: StateFlow<OfflineState> = _state.asStateFlow()
 
-    private fun scanDisk(): OfflineState {
+    private fun scanDisk(downloading: Set<String>): OfflineState {
         val files = dir.listFiles()?.filter { it.isFile && it.name.endsWith(".audio") && it.length() > 1024L }.orEmpty()
         val ids = files.map { it.name.removeSuffix(".audio") }.filter { SecurityValidators.isValidVideoId(it) }.toSet()
         val total = files.sumOf { it.length() }
-        return OfflineState(cachedIds = ids, downloadingIds = _state.value.downloadingIds, totalBytes = total)
+        return OfflineState(cachedIds = ids, downloadingIds = downloading, totalBytes = total)
     }
 
     fun getLocalFile(videoId: String): File? {
@@ -91,20 +91,20 @@ class OfflineCacheManager(
             tmp.delete()
             false
         } finally {
-            val fresh = scanDisk()
-            _state.value = fresh.copy(downloadingIds = _state.value.downloadingIds - vid)
+            val remainingDl = _state.value.downloadingIds - vid
+            _state.value = scanDisk(remainingDl)
         }
     }
 
     fun removeTrack(videoId: String) {
         if (!SecurityValidators.isValidVideoId(videoId)) return
         File(dir, "$videoId.audio").delete()
-        _state.value = scanDisk()
+        _state.value = scanDisk(_state.value.downloadingIds)
     }
 
     fun clearAll() {
         dir.listFiles()?.forEach { it.delete() }
-        _state.value = scanDisk()
+        _state.value = scanDisk(_state.value.downloadingIds)
     }
 
     companion object {

@@ -34,13 +34,13 @@ class AuthStore(private val context: Context) {
                     EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
                     EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
                 )
-            } catch (_: Exception) {
+            } catch (_: Throwable) {
                 if (attempt == 0) {
                     // Recuperar una sola vez si el archivo cifrado previo se corrompió
                     try {
                         ctx.deleteSharedPreferences(PREFS_NAME)
                         File(ctx.filesDir.parentFile, "shared_prefs/$PREFS_NAME.xml").delete()
-                    } catch (_: Exception) {
+                    } catch (_: Throwable) {
                     }
                 }
             }

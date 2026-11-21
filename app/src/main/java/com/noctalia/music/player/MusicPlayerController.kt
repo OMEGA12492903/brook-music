@@ -145,7 +145,7 @@ class MusicPlayerController(
                 val ctrl = MediaController.Builder(context, token).buildAsync().await()
                 mediaController = ctrl
                 ctrl.addListener(playerListener)
-            } catch (_: Exception) {
+            } catch (_: Throwable) {
             }
         }
     }

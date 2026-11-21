@@ -53,7 +53,7 @@
 
         <receiver
             android:name=".widget.BrookWidgetProvider"
-            android:exported="false"
+            android:exported="true"
             android:label="Brook Music">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
