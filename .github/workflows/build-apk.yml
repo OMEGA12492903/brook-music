@@ -64,8 +64,8 @@ jobs:
           path: release-apk/Brook.apk
           retention-days: 30
 
-      - name: Publicar Release en GitHub (tag latest)
-        if: github.event_name == 'push'
+      - name: Publicar Release en GitHub (tag latest, solo si hay keystore RSA-4096 configurado)
+        if: ${{ github.event_name == 'push' && secrets.SIGNING_KEYSTORE_B64 != '' }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
