@@ -21,6 +21,8 @@ data class LibrarySettings(
     @SerialName("auto_pause_on_video") val autoPauseOnVideo: Boolean = true,
     val shuffle: Boolean = false,
     @SerialName("loop_status") val loopStatus: String = "None",
+    @SerialName("bg_style") val bgStyle: String = "liquid",
+    @SerialName("bg_use_cover_colors") val bgUseCoverColors: Boolean = true,
 )
 
 /**

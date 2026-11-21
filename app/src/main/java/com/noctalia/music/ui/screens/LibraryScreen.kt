@@ -40,6 +40,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import com.noctalia.music.BuildConfig
 import androidx.compose.runtime.Composable
@@ -62,6 +64,7 @@ import com.noctalia.music.player.PlayerUiState
 import com.noctalia.music.ui.MainUiState
 import com.noctalia.music.ui.components.NoctaliaGlassCard
 import com.noctalia.music.ui.components.NoctaliaPillChip
+import com.noctalia.music.ui.components.PlayerBgStyle
 import com.noctalia.music.ui.components.TrackCoverImage
 import com.noctalia.music.ui.components.TrackRowItem
 import com.noctalia.music.ui.theme.NoctaliaColors
@@ -93,6 +96,8 @@ fun LibraryScreen(
     onImportPlaylistUrl: (String) -> Unit,
     onExportJsonClick: () -> Unit,
     onImportJsonClick: () -> Unit,
+    onSelectBgStyle: (PlayerBgStyle) -> Unit,
+    onToggleBgUseCoverColors: (Boolean) -> Unit,
     onCheckUpdate: () -> Unit,
     onDownloadUpdate: () -> Unit,
     onOpenReleases: () -> Unit,
@@ -722,6 +727,65 @@ fun LibraryScreen(
                                     fontWeight = FontWeight.SemiBold,
                                     modifier = Modifier.clickable(onClick = onOpenReleases),
                                 )
+                            }
+                        }
+                    }
+
+                    // Tarjeta de Fondo Animado del Reproductor
+                    item {
+                        val currentBgStyle = PlayerBgStyle.fromId(library.settings.bgStyle)
+                        NoctaliaGlassCard(cornerRadius = 18.dp, strong = true, modifier = Modifier.fillMaxWidth()) {
+                            Column(
+                                modifier = Modifier.padding(16.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                Text(
+                                    text = "Fondo animado del reproductor",
+                                    color = NoctaliaColors.CyanGlow,
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                )
+                                Text(
+                                    text = "Mantiene la portada fija y nítida mientras el fondo fluye al ritmo de la música.",
+                                    color = NoctaliaColors.TextMuted,
+                                    fontSize = 12.sp,
+                                )
+                                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    items(PlayerBgStyle.entries) { st ->
+                                        NoctaliaPillChip(
+                                            label = st.label,
+                                            active = currentBgStyle == st,
+                                            onClick = { onSelectBgStyle(st) },
+                                        )
+                                    }
+                                }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                ) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(
+                                            text = "Usar colores de la portada",
+                                            color = NoctaliaColors.TextPrimary,
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.Bold,
+                                        )
+                                        Text(
+                                            text = "Desactívalo para usar siempre tonos Noctalia (Cian/Magenta)",
+                                            color = NoctaliaColors.TextMuted,
+                                            fontSize = 11.sp,
+                                        )
+                                    }
+                                    Switch(
+                                        checked = library.settings.bgUseCoverColors,
+                                        onCheckedChange = onToggleBgUseCoverColors,
+                                        colors = SwitchDefaults.colors(
+                                            checkedThumbColor = NoctaliaColors.OnCyan,
+                                            checkedTrackColor = NoctaliaColors.Cyan,
+                                        ),
+                                    )
+                                }
                             }
                         }
                     }

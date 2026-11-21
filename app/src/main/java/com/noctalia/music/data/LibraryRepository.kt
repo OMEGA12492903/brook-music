@@ -174,6 +174,16 @@ class LibraryRepository(context: Context) {
         persist(cur.copy(settings = cur.settings.copy(autoRadio = enabled)))
     }
 
+    fun updatePlayerBgStyle(styleId: String) {
+        val cur = _state.value
+        persist(cur.copy(settings = cur.settings.copy(bgStyle = styleId)))
+    }
+
+    fun updatePlayerBgUseCoverColors(useCover: Boolean) {
+        val cur = _state.value
+        persist(cur.copy(settings = cur.settings.copy(bgUseCoverColors = useCover)))
+    }
+
     fun exportJson(): String = json.encodeToString(_state.value)
 
     fun importJson(rawJson: String): Boolean {

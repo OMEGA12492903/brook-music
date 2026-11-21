@@ -71,6 +71,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.noctalia.music.ui.NoctaliaViewModel
 import com.noctalia.music.ui.components.NoctaliaBackground
 import com.noctalia.music.ui.components.NoctaliaGlassCard
+import com.noctalia.music.ui.components.PlayerBgStyle
 import com.noctalia.music.ui.components.bouncyClick
 import com.noctalia.music.ui.screens.FullPlayerOverlay
 import com.noctalia.music.ui.screens.HomeScreen
@@ -287,6 +288,8 @@ private fun NoctaliaRootScreen(vm: NoctaliaViewModel = viewModel()) {
                     onImportPlaylistUrl = { vm.importPlaylistFromUrl(it) },
                     onExportJsonClick = { exportLauncher.launch("music_library.json") },
                     onImportJsonClick = { importLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
+                    onSelectBgStyle = { vm.library.updatePlayerBgStyle(it.id) },
+                    onToggleBgUseCoverColors = { vm.library.updatePlayerBgUseCoverColors(it) },
                     onCheckUpdate = { vm.checkAppUpdate() },
                     onDownloadUpdate = { vm.downloadAndInstallUpdate() },
                     onOpenReleases = { vm.openReleasesPage() },
@@ -379,9 +382,13 @@ private fun NoctaliaRootScreen(vm: NoctaliaViewModel = viewModel()) {
                 player = player,
                 audioFx = audioFx,
                 offline = offline,
+                bgStyle = PlayerBgStyle.fromId(library.settings.bgStyle),
+                bgUseCoverColors = library.settings.bgUseCoverColors,
                 isFavorite = player.currentTrack?.id in favIds,
                 favoriteIds = favIds,
                 onCollapse = { fullPlayerOpen = false },
+                onSelectBgStyle = { vm.library.updatePlayerBgStyle(it.id) },
+                onToggleBgUseCoverColors = { vm.library.updatePlayerBgUseCoverColors(it) },
                 onArtistClick = { artist ->
                     fullPlayerOpen = false
                     currentNav = "search"

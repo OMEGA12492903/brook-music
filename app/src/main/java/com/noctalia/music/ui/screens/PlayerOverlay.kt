@@ -101,11 +101,12 @@ import com.noctalia.music.player.AudioFxState
 import com.noctalia.music.player.EqPreset
 import com.noctalia.music.player.PlayerUiState
 import com.noctalia.music.player.RepeatMode
-import com.noctalia.music.ui.components.NoctaliaBackground
+import com.noctalia.music.ui.components.BrookAnimatedPlayerBackground
 import com.noctalia.music.ui.components.NoctaliaGlassCard
 import com.noctalia.music.ui.components.NoctaliaMiniEqualizer
 import com.noctalia.music.ui.components.NoctaliaPillChip
 import com.noctalia.music.ui.components.NoctaliaWaveSeekBar
+import com.noctalia.music.ui.components.PlayerBgStyle
 import com.noctalia.music.ui.components.TrackCoverImage
 import com.noctalia.music.ui.components.TrackRowItem
 import com.noctalia.music.ui.components.bouncyClick
@@ -255,9 +256,13 @@ fun FullPlayerOverlay(
     player: PlayerUiState,
     audioFx: AudioFxState,
     offline: OfflineState,
+    bgStyle: PlayerBgStyle,
+    bgUseCoverColors: Boolean,
     isFavorite: Boolean,
     favoriteIds: Set<String>,
     onCollapse: () -> Unit,
+    onSelectBgStyle: (PlayerBgStyle) -> Unit,
+    onToggleBgUseCoverColors: (Boolean) -> Unit,
     onArtistClick: (String) -> Unit,
     onPlayPause: () -> Unit,
     onNext: () -> Unit,
@@ -296,19 +301,11 @@ fun FullPlayerOverlay(
     )
     val dragFrac = (dragDownOffset / 900f).coerceIn(0f, 1f)
 
-    // Pulso de respiración del halo detrás de la carátula cuando suena música
-    val haloPulse = rememberInfiniteTransition(label = "cover_halo_pulse")
-    val haloBreath by haloPulse.animateFloat(
-        initialValue = 0.92f,
-        targetValue = 1.08f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 2200, easing = FastOutSlowInEasing),
-            repeatMode = AnimRepeatMode.Reverse,
-        ),
-        label = "halo_breath",
-    )
-
-    NoctaliaBackground(
+    BrookAnimatedPlayerBackground(
+        coverUrl = track.thumb,
+        isPlaying = player.isPlaying,
+        style = bgStyle,
+        useCoverColors = bgUseCoverColors,
         modifier = Modifier
             .fillMaxSize()
             .graphicsLayer {
@@ -555,6 +552,36 @@ fun FullPlayerOverlay(
                     ) {
                         NoctaliaGlassCard(cornerRadius = 18.dp, strong = true, modifier = Modifier.fillMaxWidth()) {
                             Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Text("Fondo animado", color = NoctaliaColors.CyanGlow, fontSize = 15.sp, fontWeight = FontWeight.ExtraBold)
+                                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    items(PlayerBgStyle.entries) { st ->
+                                        NoctaliaPillChip(
+                                            label = st.label,
+                                            active = bgStyle == st,
+                                            onClick = { onSelectBgStyle(st) },
+                                        )
+                                    }
+                                }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                ) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text("Colores de la portada", color = NoctaliaColors.TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                        Text("Adapta el fondo animado a cada canción", color = NoctaliaColors.TextMuted, fontSize = 11.sp)
+                                    }
+                                    Switch(
+                                        checked = bgUseCoverColors,
+                                        onCheckedChange = onToggleBgUseCoverColors,
+                                        colors = SwitchDefaults.colors(checkedThumbColor = NoctaliaColors.OnCyan, checkedTrackColor = NoctaliaColors.Cyan),
+                                    )
+                                }
+                            }
+                        }
+
+                        NoctaliaGlassCard(cornerRadius = 18.dp, strong = true, modifier = Modifier.fillMaxWidth()) {
+                            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                                 Text("Ecualizador (Presets)", color = NoctaliaColors.CyanGlow, fontSize = 15.sp, fontWeight = FontWeight.ExtraBold)
                                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     items(EqPreset.entries) { preset ->
@@ -672,17 +699,7 @@ fun FullPlayerOverlay(
                 }
 
                 else -> {
-                    // Vista principal del reproductor con físicas suaves
-                    val coverPlayScale by animateFloatAsState(
-                        targetValue = if (player.isPlaying) 1f else 0.90f,
-                        animationSpec = spring(dampingRatio = 0.65f, stiffness = 240f),
-                        label = "cover_play_scale",
-                    )
-                    val haloAlpha by animateFloatAsState(
-                        targetValue = if (player.isPlaying) 0.42f else 0.14f,
-                        animationSpec = tween(420, easing = FastOutSlowInEasing),
-                        label = "cover_halo_alpha",
-                    )
+                    // Vista principal del reproductor: carátula fija y nítida sobre el fondo animado vivo
                     var coverDragX by remember { mutableFloatStateOf(0f) }
                     var coverDragging by remember { mutableStateOf(false) }
                     val animCoverDragX by animateFloatAsState(
@@ -708,7 +725,7 @@ fun FullPlayerOverlay(
                         modifier = Modifier.fillMaxSize(),
                         verticalArrangement = Arrangement.SpaceBetween,
                     ) {
-                        // Carátula grande con halo respirando + deslizar lateral (Siguiente/Anterior) + bajar
+                        // Carátula tal cual, fija y nítida (deslizar lateral para Siguiente/Anterior)
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -739,33 +756,13 @@ fun FullPlayerOverlay(
                                 },
                             contentAlignment = Alignment.Center,
                         ) {
-                            // Halo ambiental pulsante detrás de la carátula
-                            Canvas(modifier = Modifier.size(310.dp)) {
-                                val rad = (size.minDimension / 2f) * (if (player.isPlaying) haloBreath else 0.94f)
-                                drawCircle(
-                                    brush = Brush.radialGradient(
-                                        colors = listOf(
-                                            NoctaliaColors.CyanGlow.copy(alpha = haloAlpha),
-                                            NoctaliaColors.Magenta.copy(alpha = haloAlpha * 0.45f),
-                                            Color.Transparent,
-                                        ),
-                                        center = Offset(size.width / 2f, size.height / 2f),
-                                        radius = rad,
-                                    ),
-                                    radius = rad,
-                                    center = Offset(size.width / 2f, size.height / 2f),
-                                )
-                            }
-
                             AnimatedContent(
                                 targetState = track.thumb,
                                 transitionSpec = {
-                                    (slideInHorizontally(spring(dampingRatio = 0.78f, stiffness = 360f)) { it / 2 } +
-                                        fadeIn(tween(260)) +
-                                        scaleIn(tween(280, easing = FastOutSlowInEasing), initialScale = 0.88f)) togetherWith
-                                        (slideOutHorizontally(tween(220)) { -it / 2 } +
-                                            fadeOut(tween(180)) +
-                                            scaleOut(tween(200), targetScale = 0.88f))
+                                    (slideInHorizontally(spring(dampingRatio = 0.80f, stiffness = 380f)) { it / 2 } +
+                                        fadeIn(tween(240))) togetherWith
+                                        (slideOutHorizontally(tween(200)) { -it / 2 } +
+                                            fadeOut(tween(180)))
                                 },
                                 label = "big_cover_swap",
                             ) { coverUrl ->
@@ -774,10 +771,8 @@ fun FullPlayerOverlay(
                                     size = 266.dp,
                                     cornerRadius = 26.dp,
                                     modifier = Modifier.graphicsLayer {
-                                        scaleX = coverPlayScale
-                                        scaleY = coverPlayScale
                                         translationX = animCoverDragX
-                                        rotationZ = (animCoverDragX / 36f).coerceIn(-6f, 6f)
+                                        rotationZ = (animCoverDragX / 40f).coerceIn(-5f, 5f)
                                     },
                                 )
                             }
