@@ -22,8 +22,8 @@ android {
         applicationId = "com.noctalia.music"
         minSdk = 26
         targetSdk = 35
-        versionCode = 8
-        versionName = "2.0.3"
+        versionCode = 9
+        versionName = "2.0.4"
 
         vectorDrawables {
             useSupportLibrary = true

@@ -96,6 +96,9 @@ class YTMusicApi(private val authStore: AuthStore) {
 
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
     private val streamCache = ConcurrentHashMap<String, ResolvedStream>()
+    @Volatile private var cachedVisitorData: String? = null
+    @Volatile private var visitorDataFetchedAtMs: Long = 0L
+    private val visitorLock = Any()
 
     private fun readBoundedBody(resp: Response, maxBytes: Long = MAX_API_JSON_BYTES): String? {
         val body = resp.body ?: return null
@@ -244,106 +247,290 @@ class YTMusicApi(private val authStore: AuthStore) {
         out
     }
 
-    /**
-     * Resuelve el stream de audio directo de máxima calidad gratis (Opus 160k itag 251 -> AAC 130k itag 140).
-     * Se ejecuta SIN cookies de cuenta para garantizar 0 anuncios y máxima seguridad de tu cuenta Google.
-     */
-    suspend fun resolveStreamUrl(videoId: String, forceRefresh: Boolean = false): ResolvedStream? =
-        withContext(Dispatchers.IO) {
-            if (!SecurityValidators.isValidVideoId(videoId)) return@withContext null
-
+    private fun getOrFetchVisitorData(forceRefresh: Boolean = false): String? {
+        val now = System.currentTimeMillis()
+        if (!forceRefresh) {
+            val cur = cachedVisitorData
+            if (!cur.isNullOrBlank() && (now - visitorDataFetchedAtMs) < VISITOR_TTL_MS) {
+                return cur
+            }
+        }
+        synchronized(visitorLock) {
+            val now2 = System.currentTimeMillis()
             if (!forceRefresh) {
-                val cached = streamCache[videoId]
-                if (cached != null && (System.currentTimeMillis() - cached.fetchedAtMs) < STREAM_CACHE_TTL_MS) {
-                    return@withContext cached
+                val cur = cachedVisitorData
+                if (!cur.isNullOrBlank() && (now2 - visitorDataFetchedAtMs) < VISITOR_TTL_MS) {
+                    return cur
                 }
             }
-
             val payload = buildJsonObject {
                 putJsonObject("context") {
                     putJsonObject("client") {
+                        put("clientName", "VISIONOS")
+                        put("clientVersion", VISIONOS_CLIENT_VERSION)
+                        put("hl", "es")
+                        put("gl", "ES")
+                    }
+                }
+            }
+            val req = Request.Builder()
+                .url("https://www.youtube.com/youtubei/v1/visitor_id?prettyPrint=false")
+                .header("User-Agent", VISIONOS_UA)
+                .header("Content-Type", "application/json")
+                .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
+                .build()
+            return try {
+                apiHttpClient.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) return cachedVisitorData
+                    val txt = readBoundedBody(resp, maxBytes = 256L * 1024L) ?: return cachedVisitorData
+                    val root = json.parseToJsonElement(txt).jsonObject
+                    val vd = root.obj("responseContext")?.str("visitorData")?.takeIf { it.length in 10..2048 }
+                    if (vd != null) {
+                        cachedVisitorData = vd
+                        visitorDataFetchedAtMs = System.currentTimeMillis()
+                    }
+                    vd ?: cachedVisitorData
+                }
+            } catch (_: Exception) {
+                cachedVisitorData
+            }
+        }
+    }
+
+    /**
+     * Resuelve el stream de audio directo de máxima calidad gratis (Opus 160k itag 251 -> AAC 130k itag 140)
+     * con fallback automático a HLS solo-audio (itag 234 AAC 128k).
+     * Se ejecuta SIN cookies de cuenta para garantizar 0 anuncios y máxima seguridad de tu cuenta Google.
+     */
+    suspend fun resolveStreamUrl(
+        videoId: String,
+        forceRefresh: Boolean = false,
+        preferHls: Boolean = false,
+    ): ResolvedStream? = withContext(Dispatchers.IO) {
+        if (!SecurityValidators.isValidVideoId(videoId)) return@withContext null
+
+        val cacheKey = if (preferHls) "$videoId:hls" else videoId
+        if (!forceRefresh) {
+            val cached = streamCache[cacheKey]
+            if (cached != null && (System.currentTimeMillis() - cached.fetchedAtMs) < STREAM_CACHE_TTL_MS) {
+                return@withContext cached
+            }
+        }
+
+        // 1. Cliente principal VISIONOS + visitorData fresco (devuelve Opus 251 completo sin 403 + HLS audio 234)
+        val firstVd = getOrFetchVisitorData(forceRefresh = forceRefresh)
+        var resolved = fetchPlayerStream(videoId, useVisionOs = true, visitorData = firstVd, preferHls = preferHls)
+
+        // Si falló con visitorData cacheado, renovar visitorData una vez y reintentar
+        if (resolved == null && !forceRefresh) {
+            val freshVd = getOrFetchVisitorData(forceRefresh = true)
+            if (freshVd != null && freshVd != firstVd) {
+                resolved = fetchPlayerStream(videoId, useVisionOs = true, visitorData = freshVd, preferHls = preferHls)
+            }
+        }
+
+        // 2. Fallback secundario IOS (útil para algunos directos o pistas con HLS en iOS)
+        if (resolved == null) {
+            val vd = cachedVisitorData
+            resolved = fetchPlayerStream(videoId, useVisionOs = false, visitorData = vd, preferHls = true)
+        }
+
+        if (resolved != null) {
+            if (streamCache.size > 60) streamCache.clear()
+            streamCache[cacheKey] = resolved
+        }
+        resolved
+    }
+
+    private fun fetchPlayerStream(
+        videoId: String,
+        useVisionOs: Boolean,
+        visitorData: String?,
+        preferHls: Boolean,
+    ): ResolvedStream? {
+        val ua = if (useVisionOs) VISIONOS_UA else IOS_UA
+        val payload = buildJsonObject {
+            putJsonObject("context") {
+                putJsonObject("client") {
+                    if (useVisionOs) {
+                        put("clientName", "VISIONOS")
+                        put("clientVersion", VISIONOS_CLIENT_VERSION)
+                        put("deviceMake", "Apple")
+                        put("deviceModel", "RealityDevice17,1")
+                        put("osName", "visionOS")
+                        put("osVersion", "26.5.23O471")
+                    } else {
                         put("clientName", "IOS")
                         put("clientVersion", IOS_CLIENT_VERSION)
                         put("deviceMake", "Apple")
                         put("deviceModel", "iPhone16,2")
                         put("osName", "iPhone")
                         put("osVersion", "18.3.2.22D82")
-                        put("hl", "es")
-                        put("gl", "ES")
+                    }
+                    put("hl", "es")
+                    put("gl", "ES")
+                    if (!visitorData.isNullOrBlank()) {
+                        put("visitorData", visitorData)
                     }
                 }
-                put("videoId", videoId)
-                put("contentCheckOk", true)
-                put("racyCheckOk", true)
             }
-
-            val req = Request.Builder()
-                .url("https://www.youtube.com/youtubei/v1/player?prettyPrint=false")
-                .header("User-Agent", IOS_UA)
-                .header("Content-Type", "application/json")
-                .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
-                .build()
-
-            try {
-                apiHttpClient.newCall(req).execute().use { resp ->
-                    if (!resp.isSuccessful) return@withContext null
-                    val bodyTxt = readBoundedBody(resp) ?: return@withContext null
-                    val root = json.parseToJsonElement(bodyTxt).jsonObject
-                    val status = root.obj("playabilityStatus")?.str("status")
-                    if (status != "OK") return@withContext null
-
-                    val streamingData = root.obj("streamingData")
-                    val adaptive = streamingData?.arr("adaptiveFormats")
-                    val candidates = adaptive?.mapNotNull { el ->
-                        val o = el.asObj() ?: return@mapNotNull null
-                        val mime = o.str("mimeType") ?: return@mapNotNull null
-                        if (!mime.startsWith("audio/")) return@mapNotNull null
-                        val url = o.str("url") ?: return@mapNotNull null
-                        if (!SecurityValidators.isSafeStreamUrl(url)) return@mapNotNull null
-                        val bitrate = o.int("bitrate") ?: 0
-                        val itag = o.int("itag") ?: 0
-                        Triple(itag, bitrate, Pair(url, mime))
-                    }.orEmpty()
-
-                    val bestOpus = candidates
-                        .filter { it.third.second.contains("opus", ignoreCase = true) }
-                        .maxByOrNull { it.second }
-                    val bestAny = candidates.maxByOrNull { it.second }
-                    val chosen = bestOpus ?: bestAny
-
-                    val resolved = if (chosen != null) {
-                        val kbps = (chosen.second / 1000).coerceAtLeast(64)
-                        val codecName = if (chosen.third.second.contains("opus", ignoreCase = true)) "OPUS" else "AAC"
-                        ResolvedStream(
-                            url = chosen.third.first,
-                            mimeType = chosen.third.second,
-                            bitrateKbps = kbps,
-                            qualityLabel = "$codecName ${kbps}k",
-                            userAgent = IOS_UA,
-                        )
-                    } else {
-                        // Fallback HLS para directos 24/7 (ej. Lofi Girl) o pistas sin adaptiveFormats
-                        val hlsUrl = streamingData?.str("hlsManifestUrl")
-                        if (!hlsUrl.isNullOrBlank() && SecurityValidators.isSafeStreamUrl(hlsUrl)) {
-                            ResolvedStream(
-                                url = hlsUrl,
-                                mimeType = "application/x-mpegURL",
-                                bitrateKbps = 128,
-                                qualityLabel = "HLS LIVE",
-                                userAgent = IOS_UA,
-                            )
-                        } else {
-                            return@withContext null
-                        }
-                    }
-                    if (streamCache.size > 60) streamCache.clear()
-                    streamCache[videoId] = resolved
-                    resolved
-                }
-            } catch (_: Exception) {
-                null
-            }
+            put("videoId", videoId)
+            put("contentCheckOk", true)
+            put("racyCheckOk", true)
         }
+
+        val reqBuilder = Request.Builder()
+            .url("https://www.youtube.com/youtubei/v1/player?prettyPrint=false")
+            .header("User-Agent", ua)
+            .header("Content-Type", "application/json")
+            .header("X-YouTube-Client-Name", if (useVisionOs) "101" else "5")
+            .header("X-YouTube-Client-Version", if (useVisionOs) VISIONOS_CLIENT_VERSION else IOS_CLIENT_VERSION)
+            .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
+
+        if (!visitorData.isNullOrBlank()) {
+            reqBuilder.header("X-Goog-Visitor-Id", visitorData)
+        }
+
+        return try {
+            apiHttpClient.newCall(reqBuilder.build()).execute().use { resp ->
+                if (!resp.isSuccessful) return null
+                val bodyTxt = readBoundedBody(resp) ?: return null
+                val root = json.parseToJsonElement(bodyTxt).jsonObject
+                val status = root.obj("playabilityStatus")?.str("status")
+                if (status != "OK") return null
+
+                val streamingData = root.obj("streamingData") ?: return null
+                val hlsMasterUrl = streamingData.str("hlsManifestUrl")
+                    ?.takeIf { SecurityValidators.isSafeStreamUrl(it) }
+
+                // Si se solicitó HLS (reintento automático o fallback), priorizar pista HLS solo-audio (234/233)
+                if (preferHls && hlsMasterUrl != null) {
+                    val hlsAudio = resolveAudioOnlyHls(hlsMasterUrl, ua)
+                    if (hlsAudio != null) return hlsAudio
+                }
+
+                val adaptive = streamingData.arr("adaptiveFormats")
+                val candidates = adaptive?.mapNotNull { el ->
+                    val o = el.asObj() ?: return@mapNotNull null
+                    val mime = o.str("mimeType") ?: return@mapNotNull null
+                    if (!mime.startsWith("audio/")) return@mapNotNull null
+                    val url = o.str("url") ?: return@mapNotNull null
+                    if (!SecurityValidators.isSafeStreamUrl(url)) return@mapNotNull null
+                    val bitrate = o.int("bitrate") ?: 0
+                    val itag = o.int("itag") ?: 0
+                    Triple(itag, bitrate, Pair(url, mime))
+                }.orEmpty()
+
+                val bestOpus = candidates
+                    .filter { it.third.second.contains("opus", ignoreCase = true) }
+                    .maxByOrNull { it.second }
+                val bestAny = candidates.maxByOrNull { it.second }
+                val chosen = bestOpus ?: bestAny
+
+                if (chosen != null) {
+                    val kbps = (chosen.second / 1000).coerceAtLeast(64)
+                    val codecName = if (chosen.third.second.contains("opus", ignoreCase = true)) "OPUS" else "AAC"
+                    ResolvedStream(
+                        url = chosen.third.first,
+                        mimeType = chosen.third.second,
+                        bitrateKbps = kbps,
+                        qualityLabel = "$codecName ${kbps}k",
+                        userAgent = ua,
+                    )
+                } else if (hlsMasterUrl != null) {
+                    resolveAudioOnlyHls(hlsMasterUrl, ua)
+                } else {
+                    null
+                }
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Extrae la lista HLS solo-audio (GROUP-ID="234" AAC 128k, o "233" como respaldo)
+     * desde el manifiesto maestro HLS para reproducir 0 bytes de vídeo en ExoPlayer.
+     */
+    private fun resolveAudioOnlyHls(masterUrl: String, userAgent: String): ResolvedStream? {
+        if (!SecurityValidators.isSafeStreamUrl(masterUrl)) return null
+        return try {
+            val req = Request.Builder()
+                .url(masterUrl)
+                .header("User-Agent", userAgent)
+                .get()
+                .build()
+            streamHttpClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    return ResolvedStream(
+                        url = masterUrl,
+                        mimeType = "application/x-mpegURL",
+                        bitrateKbps = 128,
+                        qualityLabel = "HLS AUDIO",
+                        userAgent = userAgent,
+                    )
+                }
+                val text = readBoundedBody(resp, maxBytes = 512L * 1024L).orEmpty()
+                val audioLines = text.lineSequence()
+                    .filter { it.startsWith("#EXT-X-MEDIA:") && it.contains("TYPE=AUDIO") }
+                    .toList()
+
+                var best234: String? = null
+                var best233: String? = null
+                var anyAudio: String? = null
+
+                for (line in audioLines) {
+                    val uri = HLS_URI_RE.find(line)?.groupValues?.getOrNull(1) ?: continue
+                    if (!SecurityValidators.isSafeStreamUrl(uri)) continue
+                    val gid = HLS_GROUP_RE.find(line)?.groupValues?.getOrNull(1)
+                    when (gid) {
+                        "234" -> if (best234 == null) best234 = uri
+                        "233" -> if (best233 == null) best233 = uri
+                    }
+                    if (anyAudio == null) anyAudio = uri
+                }
+
+                when {
+                    best234 != null -> ResolvedStream(
+                        url = best234,
+                        mimeType = "application/x-mpegURL",
+                        bitrateKbps = 128,
+                        qualityLabel = "HLS AAC 128k",
+                        userAgent = userAgent,
+                    )
+                    best233 != null -> ResolvedStream(
+                        url = best233,
+                        mimeType = "application/x-mpegURL",
+                        bitrateKbps = 64,
+                        qualityLabel = "HLS AAC 64k",
+                        userAgent = userAgent,
+                    )
+                    anyAudio != null -> ResolvedStream(
+                        url = anyAudio,
+                        mimeType = "application/x-mpegURL",
+                        bitrateKbps = 96,
+                        qualityLabel = "HLS AUDIO",
+                        userAgent = userAgent,
+                    )
+                    else -> ResolvedStream(
+                        url = masterUrl,
+                        mimeType = "application/x-mpegURL",
+                        bitrateKbps = 128,
+                        qualityLabel = "HLS LIVE",
+                        userAgent = userAgent,
+                    )
+                }
+            }
+        } catch (_: Exception) {
+            ResolvedStream(
+                url = masterUrl,
+                mimeType = "application/x-mpegURL",
+                bitrateKbps = 128,
+                qualityLabel = "HLS AUDIO",
+                userAgent = userAgent,
+            )
+        }
+    }
 
     suspend fun fetchAccountPlaylists(): List<RemotePlaylist> = withContext(Dispatchers.IO) {
         if (!authStore.isLoggedIn()) return@withContext emptyList()
@@ -598,11 +785,17 @@ class YTMusicApi(private val authStore: AuthStore) {
         private val ALLOWED_ENDPOINTS = setOf("search", "next", "browse")
         private const val SONGS_FILTER_PARAMS = "EgWKAQIIAWoKEAkQBRAKEAMQBA%3D%3D"
         private const val STREAM_CACHE_TTL_MS = 15 * 60 * 1000L
+        private const val VISITOR_TTL_MS = 25 * 60 * 1000L
         private const val MAX_API_JSON_BYTES = 4L * 1024L * 1024L
         private const val MAX_THUMB_BYTES = 3L * 1024L * 1024L
         private const val MAX_JSON_DEPTH = 32
+        private val HLS_URI_RE = Regex("""URI="([^"]+)"""")
+        private val HLS_GROUP_RE = Regex("""GROUP-ID="([^"]+)"""")
         private const val WEB_UA =
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        const val VISIONOS_CLIENT_VERSION = "1.02"
+        const val VISIONOS_UA =
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15"
         const val IOS_CLIENT_VERSION = "20.10.4"
         const val IOS_UA =
             "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)"

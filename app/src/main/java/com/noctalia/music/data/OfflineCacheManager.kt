@@ -53,15 +53,19 @@ class OfflineCacheManager(
         val target = File(dir, "$vid.audio")
         val tmp = File(dir, "$vid.tmp")
         try {
-            val stream = api.resolveStreamUrl(vid) ?: return@withContext false
+            val stream = api.resolveStreamUrl(vid, preferHls = false) ?: return@withContext false
             if (!SecurityValidators.isSafeStreamUrl(stream.url)) return@withContext false
+            // Solo guardar en disco streams de audio directo (no manifiestos .m3u8 de texto)
+            if (!stream.mimeType.startsWith("audio/", ignoreCase = true)) return@withContext false
 
             val req = Request.Builder()
                 .url(stream.url)
                 .header("User-Agent", stream.userAgent)
+                .header("Range", "bytes=0-")
                 .get()
                 .build()
 
+            var copied = 0L
             api.streamHttpClient.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) return@withContext false
                 val body = resp.body ?: return@withContext false
@@ -69,7 +73,6 @@ class OfflineCacheManager(
                 body.byteStream().use { input ->
                     tmp.outputStream().use { out ->
                         val buf = ByteArray(16_384)
-                        var copied = 0L
                         while (true) {
                             val n = input.read(buf)
                             if (n <= 0) break
@@ -79,6 +82,10 @@ class OfflineCacheManager(
                         }
                     }
                 }
+            }
+            if (copied <= 1024L) {
+                tmp.delete()
+                return@withContext false
             }
 
             if (target.exists()) target.delete()

@@ -113,8 +113,16 @@ fun MiniPlayerBar(
                         overflow = TextOverflow.Ellipsis,
                     )
                     Text(
-                        text = if (player.isLoading) "Cargando audio Opus..." else track.artist,
-                        color = if (player.isLoading) NoctaliaColors.CyanGlow else NoctaliaColors.TextMuted,
+                        text = when {
+                            player.isLoading -> "Cargando audio..."
+                            !player.errorMsg.isNullOrBlank() -> player.errorMsg
+                            else -> track.artist
+                        },
+                        color = when {
+                            player.isLoading -> NoctaliaColors.CyanGlow
+                            !player.errorMsg.isNullOrBlank() -> NoctaliaColors.Magenta
+                            else -> NoctaliaColors.TextMuted
+                        },
                         fontSize = 12.sp,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,

@@ -5,8 +5,10 @@ import android.content.Context
 import android.net.Uri
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.datasource.HttpDataSource
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.noctalia.music.data.LibraryRepository
@@ -119,17 +121,37 @@ class MusicPlayerController(
             val cur = _state.value.currentTrack
             if (cur != null && !retriedCurrent) {
                 retriedCurrent = true
-                playTrack(cur, pushHistory = false, forceFreshUrl = true)
+                // Reintento automático cambiando a stream HLS solo-audio + visitorData fresco
+                playTrack(cur, pushHistory = false, forceFreshUrl = true, preferHls = true)
             } else {
+                val reason = shortPlaybackError(error)
                 _state.update {
                     it.copy(
                         isLoading = false,
                         isPlaying = false,
-                        errorMsg = "Error de reproducción. Pulsa de nuevo para reintentar.",
+                        errorMsg = "Error de reproducción ($reason). Pulsa para reintentar.",
                     )
                 }
                 BrookWidgetProvider.updateAllWidgets(context)
             }
+        }
+    }
+
+    private fun shortPlaybackError(error: PlaybackException): String {
+        var c: Throwable? = error.cause
+        var depth = 0
+        while (c != null && depth < 6) {
+            if (c is HttpDataSource.InvalidResponseCodeException) {
+                return "HTTP ${c.responseCode}"
+            }
+            c = c.cause
+            depth++
+        }
+        return when (error.errorCode) {
+            PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED -> "Sin conexión"
+            PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT -> "Tiempo agotado"
+            PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS -> "HTTP bloqueado"
+            else -> error.errorCodeName.removePrefix("ERROR_CODE_")
         }
     }
 
@@ -208,7 +230,12 @@ class MusicPlayerController(
         }
     }
 
-    fun playTrack(track: Track, pushHistory: Boolean = true, forceFreshUrl: Boolean = false) {
+    fun playTrack(
+        track: Track,
+        pushHistory: Boolean = true,
+        forceFreshUrl: Boolean = false,
+        preferHls: Boolean = false,
+    ) {
         val clean = SecurityValidators.sanitizeTrack(track) ?: return
         val prev = _state.value.currentTrack
         if (pushHistory && prev != null && prev.id != clean.id) {
@@ -265,12 +292,17 @@ class MusicPlayerController(
             val localFile = if (!forceFreshUrl) offlineCache.getLocalFile(clean.id) else null
             val mediaUri: Uri
             val qualityLabel: String
+            var isHlsStream = false
 
             if (localFile != null) {
                 mediaUri = Uri.fromFile(localFile)
                 qualityLabel = "OFFLINE · OPUS"
             } else {
-                val resolved = api.resolveStreamUrl(clean.id, forceRefresh = forceFreshUrl)
+                val resolved = api.resolveStreamUrl(
+                    videoId = clean.id,
+                    forceRefresh = forceFreshUrl,
+                    preferHls = preferHls,
+                )
                 if (resolved == null) {
                     _state.update {
                         it.copy(
@@ -284,6 +316,7 @@ class MusicPlayerController(
                 }
                 mediaUri = Uri.parse(resolved.url)
                 qualityLabel = resolved.qualityLabel
+                isHlsStream = resolved.mimeType.equals("application/x-mpegURL", ignoreCase = true)
             }
 
             val ctrl = ensureController()
@@ -300,7 +333,7 @@ class MusicPlayerController(
                 metadataBuilder.setArtworkUri(Uri.parse(clean.thumb))
             }
 
-            val item = MediaItem.Builder()
+            val itemBuilder = MediaItem.Builder()
                 .setMediaId(clean.id)
                 .setUri(mediaUri)
                 .setRequestMetadata(
@@ -309,7 +342,10 @@ class MusicPlayerController(
                         .build()
                 )
                 .setMediaMetadata(metadataBuilder.build())
-                .build()
+            if (isHlsStream) {
+                itemBuilder.setMimeType(MimeTypes.APPLICATION_M3U8)
+            }
+            val item = itemBuilder.build()
 
             _state.update { it.copy(qualityLabel = qualityLabel) }
             ctrl.volume = 1f

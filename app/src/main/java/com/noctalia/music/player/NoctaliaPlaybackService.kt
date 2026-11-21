@@ -7,6 +7,7 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
@@ -41,7 +42,7 @@ class NoctaliaPlaybackService : MediaSessionService() {
         val app = NoctaliaMusicApp.instance
 
         val httpFactory = OkHttpDataSource.Factory(app.api.streamHttpClient)
-            .setUserAgent(YTMusicApi.IOS_UA)
+            .setUserAgent(YTMusicApi.VISIONOS_UA)
         // DefaultDataSource permite reproducir tanto streams HTTPS validados como archivos locales de nuestra caché offline
         val dataSourceFactory = DefaultDataSource.Factory(this, httpFactory)
 
@@ -156,7 +157,18 @@ class NoctaliaPlaybackService : MediaSessionService() {
                         }
                         else -> false
                     }
-                    if (!allowed) null else item.buildUpon().setUri(uri).build()
+                    if (!allowed) {
+                        null
+                    } else {
+                        val b = item.buildUpon().setUri(uri)
+                        if (uriStr.contains("/hls_", ignoreCase = true) ||
+                            uriStr.contains("manifest.googlevideo.com", ignoreCase = true) ||
+                            uriStr.endsWith(".m3u8", ignoreCase = true)
+                        ) {
+                            b.setMimeType(MimeTypes.APPLICATION_M3U8)
+                        }
+                        b.build()
+                    }
                 }.toMutableList()
                 return Futures.immediateFuture(safeItems)
             }
