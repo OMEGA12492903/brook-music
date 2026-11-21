@@ -22,8 +22,8 @@ android {
         applicationId = "com.noctalia.music"
         minSdk = 26
         targetSdk = 35
-        versionCode = 6
-        versionName = "2.0.1"
+        versionCode = 7
+        versionName = "2.0.2"
 
         vectorDrawables {
             useSupportLibrary = true
@@ -97,9 +97,10 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
 
-    // Media3 (ExoPlayer + MediaSession para pantalla apagada y controles Bluetooth)
+    // Media3 (ExoPlayer + HLS + MediaSession para pantalla apagada y controles Bluetooth)
     val media3Version = "1.5.1"
     implementation("androidx.media3:media3-exoplayer:$media3Version")
+    implementation("androidx.media3:media3-exoplayer-hls:$media3Version")
     implementation("androidx.media3:media3-session:$media3Version")
     implementation("androidx.media3:media3-datasource-okhttp:$media3Version")
     implementation("androidx.media3:media3-common:$media3Version")

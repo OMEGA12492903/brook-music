@@ -158,10 +158,11 @@ private fun NoctaliaRootScreen(vm: NoctaliaViewModel = viewModel()) {
         }
     }
 
-    BackHandler(enabled = fullPlayerOpen || ui.selectedRemotePlaylist != null) {
+    BackHandler(enabled = fullPlayerOpen || ui.selectedRemotePlaylist != null || currentNav != "home") {
         when {
             fullPlayerOpen -> fullPlayerOpen = false
             ui.selectedRemotePlaylist != null -> vm.closeRemotePlaylist()
+            currentNav != "home" -> currentNav = "home"
         }
     }
 
@@ -222,7 +223,8 @@ private fun NoctaliaRootScreen(vm: NoctaliaViewModel = viewModel()) {
                     player = player,
                     library = library,
                     offline = offline,
-                    initialTab = libraryInitialTab,
+                    activeTab = libraryInitialTab,
+                    onTabChange = { libraryInitialTab = it },
                     onPlayTrack = { vm.player.playTrack(it) },
                     onPlayTrackList = { list, idx -> vm.player.playTrackList(list, idx) },
                     onAddQueue = {

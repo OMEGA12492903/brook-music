@@ -64,7 +64,8 @@ fun LibraryScreen(
     player: PlayerUiState,
     library: LibraryPayload,
     offline: OfflineState,
-    initialTab: String,
+    activeTab: String,
+    onTabChange: (String) -> Unit,
     onPlayTrack: (Track) -> Unit,
     onPlayTrackList: (List<Track>, Int) -> Unit,
     onAddQueue: (Track) -> Unit,
@@ -88,7 +89,6 @@ fun LibraryScreen(
     onDownloadUpdate: () -> Unit,
     onOpenReleases: () -> Unit,
 ) {
-    var activeTab by remember(initialTab) { mutableStateOf(initialTab) }
     var selectedLocalPlaylist by remember { mutableStateOf<String?>(null) }
     var showNewPlInput by remember { mutableStateOf(false) }
     var newPlName by remember { mutableStateOf("") }
@@ -210,28 +210,28 @@ fun LibraryScreen(
                 NoctaliaPillChip(
                     label = "Favoritas (${library.favorites.size})",
                     active = activeTab == "favs",
-                    onClick = { activeTab = "favs" },
+                    onClick = { onTabChange("favs") },
                 )
             }
             item {
                 NoctaliaPillChip(
                     label = "Playlists",
                     active = activeTab == "playlists",
-                    onClick = { activeTab = "playlists" },
+                    onClick = { onTabChange("playlists") },
                 )
             }
             item {
                 NoctaliaPillChip(
                     label = if (ui.isLoggedIn) "Cuenta YT ✓" else "Cuenta YT",
                     active = activeTab == "account",
-                    onClick = { activeTab = "account" },
+                    onClick = { onTabChange("account") },
                 )
             }
             item {
                 NoctaliaPillChip(
                     label = "Ajustes",
                     active = activeTab == "sync",
-                    onClick = { activeTab = "sync" },
+                    onClick = { onTabChange("sync") },
                 )
             }
         }
@@ -667,18 +667,22 @@ fun LibraryScreen(
                                         )
                                     }
 
-                                    if (info?.updateAvailable == true) {
+                                    if (info != null) {
                                         Button(
                                             onClick = onDownloadUpdate,
                                             enabled = !ui.downloadingUpdate,
                                             modifier = Modifier.weight(1f),
                                             colors = ButtonDefaults.buttonColors(
-                                                containerColor = NoctaliaColors.Magenta,
-                                                contentColor = Color(0xFF17051A),
+                                                containerColor = if (info.updateAvailable) NoctaliaColors.Magenta else NoctaliaColors.Glass,
+                                                contentColor = if (info.updateAvailable) Color(0xFF17051A) else NoctaliaColors.TextPrimary,
                                             ),
                                             shape = RoundedCornerShape(14.dp),
                                         ) {
-                                            Text("Descargar e instalar", fontWeight = FontWeight.ExtraBold, fontSize = 12.sp)
+                                            Text(
+                                                text = if (info.updateAvailable) "Descargar e instalar" else "Reinstalar APK",
+                                                fontWeight = FontWeight.ExtraBold,
+                                                fontSize = 12.sp,
+                                            )
                                         }
                                     }
                                 }

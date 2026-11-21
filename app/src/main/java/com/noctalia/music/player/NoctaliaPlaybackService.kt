@@ -143,18 +143,20 @@ class NoctaliaPlaybackService : MediaSessionService() {
                     return Futures.immediateFuture(mutableListOf())
                 }
                 val offlineRoot = File(filesDir, "offline_audio").canonicalPath
-                val safeItems = mediaItems.filter { item ->
-                    val uri = item.localConfiguration?.uri ?: return@filter false
+                val safeItems = mediaItems.mapNotNull { item ->
+                    // Media3 IPC puede limpiar localConfiguration; recuperar desde requestMetadata.mediaUri
+                    val uri = item.localConfiguration?.uri ?: item.requestMetadata.mediaUri ?: return@mapNotNull null
                     val uriStr = uri.toString()
-                    if (SecurityValidators.isSafeStreamUrl(uriStr)) return@filter true
-                    if (uri.scheme == "file" && !uri.path.isNullOrBlank()) {
-                        return@filter try {
+                    val allowed = when {
+                        SecurityValidators.isSafeStreamUrl(uriStr) -> true
+                        uri.scheme == "file" && !uri.path.isNullOrBlank() -> try {
                             File(uri.path!!).canonicalPath.startsWith("$offlineRoot/")
                         } catch (_: Exception) {
                             false
                         }
+                        else -> false
                     }
-                    false
+                    if (!allowed) null else item.buildUpon().setUri(uri).build()
                 }.toMutableList()
                 return Futures.immediateFuture(safeItems)
             }

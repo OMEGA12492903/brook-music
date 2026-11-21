@@ -151,14 +151,19 @@ class MusicPlayerController(
     }
 
     private suspend fun ensureController(): MediaController? {
-        mediaController?.let { return it }
+        mediaController?.takeIf { it.isConnected }?.let { return it }
+        try {
+            mediaController?.removeListener(playerListener)
+        } catch (_: Throwable) {
+        }
+        mediaController = null
         return try {
             val token = SessionToken(context, ComponentName(context, NoctaliaPlaybackService::class.java))
             val ctrl = MediaController.Builder(context, token).buildAsync().await()
             mediaController = ctrl
             ctrl.addListener(playerListener)
             ctrl
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             null
         }
     }
@@ -298,6 +303,11 @@ class MusicPlayerController(
             val item = MediaItem.Builder()
                 .setMediaId(clean.id)
                 .setUri(mediaUri)
+                .setRequestMetadata(
+                    MediaItem.RequestMetadata.Builder()
+                        .setMediaUri(mediaUri)
+                        .build()
+                )
                 .setMediaMetadata(metadataBuilder.build())
                 .build()
 
@@ -320,29 +330,33 @@ class MusicPlayerController(
     }
 
     fun togglePlayPause() {
-        val ctrl = mediaController ?: return
         if (_state.value.currentTrack == null) {
             val rec = library.state.value.recent.firstOrNull()
             if (rec != null) playTrack(rec, pushHistory = false)
             return
         }
-        if (ctrl.isPlaying) {
-            ctrl.pause()
-        } else {
-            ctrl.volume = 1f
-            if (ctrl.playbackState == Player.STATE_IDLE || ctrl.playbackState == Player.STATE_ENDED) {
-                _state.value.currentTrack?.let { playTrack(it, pushHistory = false) }
+        scope.launch {
+            val ctrl = ensureController() ?: return@launch
+            if (ctrl.isPlaying) {
+                ctrl.pause()
             } else {
-                ctrl.play()
+                ctrl.volume = 1f
+                if (ctrl.playbackState == Player.STATE_IDLE || ctrl.playbackState == Player.STATE_ENDED || ctrl.mediaItemCount == 0) {
+                    _state.value.currentTrack?.let { playTrack(it, pushHistory = false) }
+                } else {
+                    ctrl.play()
+                }
             }
         }
     }
 
     fun seekTo(positionMs: Long) {
-        val ctrl = mediaController ?: return
-        val clamped = positionMs.coerceIn(0L, _state.value.durationMs.coerceAtLeast(1L))
-        ctrl.seekTo(clamped)
-        _state.update { it.copy(positionMs = clamped) }
+        scope.launch {
+            val ctrl = ensureController() ?: return@launch
+            val clamped = positionMs.coerceIn(0L, _state.value.durationMs.coerceAtLeast(1L))
+            ctrl.seekTo(clamped)
+            _state.update { it.copy(positionMs = clamped) }
+        }
     }
 
     fun skipNext(autoAdvance: Boolean = false) {
@@ -428,6 +442,10 @@ class MusicPlayerController(
 
     fun cancelSleepTimer() {
         sleepJob?.cancel()
+        try {
+            mediaController?.takeIf { it.isConnected }?.volume = 1f
+        } catch (_: Throwable) {
+        }
         _state.update { it.copy(sleepRemainingSec = null, sleepEndOfTrack = false) }
     }
 

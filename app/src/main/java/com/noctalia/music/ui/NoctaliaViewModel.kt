@@ -220,13 +220,13 @@ class NoctaliaViewModel : ViewModel() {
         }
         viewModelScope.launch {
             _ui.update { it.copy(loadingAccount = true) }
-            val tracks = api.fetchPlaylistTracks(listId, useAuth = authStore.isLoggedIn())
+            val (plTitle, tracks) = api.fetchPlaylistWithTitle(listId, useAuth = authStore.isLoggedIn())
             _ui.update { it.copy(loadingAccount = false) }
             if (tracks.isEmpty()) {
                 showMessage("No se encontraron canciones (asegúrate de que la playlist sea Pública u Oculta).")
             } else {
-                val count = library.savePlaylistWithTracks("Playlist YT", tracks)
-                showMessage("Importadas $count canciones a «Playlist YT».")
+                val count = library.savePlaylistWithTracks(plTitle, tracks)
+                showMessage("Importadas $count canciones a «$plTitle».")
             }
         }
     }

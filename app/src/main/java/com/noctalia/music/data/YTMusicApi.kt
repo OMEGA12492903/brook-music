@@ -292,8 +292,9 @@ class YTMusicApi(private val authStore: AuthStore) {
                     val status = root.obj("playabilityStatus")?.str("status")
                     if (status != "OK") return@withContext null
 
-                    val adaptive = root.obj("streamingData")?.arr("adaptiveFormats") ?: return@withContext null
-                    val candidates = adaptive.mapNotNull { el ->
+                    val streamingData = root.obj("streamingData")
+                    val adaptive = streamingData?.arr("adaptiveFormats")
+                    val candidates = adaptive?.mapNotNull { el ->
                         val o = el.asObj() ?: return@mapNotNull null
                         val mime = o.str("mimeType") ?: return@mapNotNull null
                         if (!mime.startsWith("audio/")) return@mapNotNull null
@@ -302,23 +303,39 @@ class YTMusicApi(private val authStore: AuthStore) {
                         val bitrate = o.int("bitrate") ?: 0
                         val itag = o.int("itag") ?: 0
                         Triple(itag, bitrate, Pair(url, mime))
-                    }
+                    }.orEmpty()
 
                     val bestOpus = candidates
                         .filter { it.third.second.contains("opus", ignoreCase = true) }
                         .maxByOrNull { it.second }
                     val bestAny = candidates.maxByOrNull { it.second }
-                    val chosen = bestOpus ?: bestAny ?: return@withContext null
+                    val chosen = bestOpus ?: bestAny
 
-                    val kbps = (chosen.second / 1000).coerceAtLeast(64)
-                    val codecName = if (chosen.third.second.contains("opus", ignoreCase = true)) "OPUS" else "AAC"
-                    val resolved = ResolvedStream(
-                        url = chosen.third.first,
-                        mimeType = chosen.third.second,
-                        bitrateKbps = kbps,
-                        qualityLabel = "$codecName ${kbps}k",
-                        userAgent = IOS_UA,
-                    )
+                    val resolved = if (chosen != null) {
+                        val kbps = (chosen.second / 1000).coerceAtLeast(64)
+                        val codecName = if (chosen.third.second.contains("opus", ignoreCase = true)) "OPUS" else "AAC"
+                        ResolvedStream(
+                            url = chosen.third.first,
+                            mimeType = chosen.third.second,
+                            bitrateKbps = kbps,
+                            qualityLabel = "$codecName ${kbps}k",
+                            userAgent = IOS_UA,
+                        )
+                    } else {
+                        // Fallback HLS para directos 24/7 (ej. Lofi Girl) o pistas sin adaptiveFormats
+                        val hlsUrl = streamingData?.str("hlsManifestUrl")
+                        if (!hlsUrl.isNullOrBlank() && SecurityValidators.isSafeStreamUrl(hlsUrl)) {
+                            ResolvedStream(
+                                url = hlsUrl,
+                                mimeType = "application/x-mpegURL",
+                                bitrateKbps = 128,
+                                qualityLabel = "HLS LIVE",
+                                userAgent = IOS_UA,
+                            )
+                        } else {
+                            return@withContext null
+                        }
+                    }
                     if (streamCache.size > 60) streamCache.clear()
                     streamCache[videoId] = resolved
                     resolved
@@ -353,9 +370,12 @@ class YTMusicApi(private val authStore: AuthStore) {
     }
 
     suspend fun fetchPlaylistTracks(rawBrowseOrListId: String, useAuth: Boolean = true): List<Track> =
+        fetchPlaylistWithTitle(rawBrowseOrListId, useAuth).second
+
+    suspend fun fetchPlaylistWithTitle(rawBrowseOrListId: String, useAuth: Boolean = true): Pair<String, List<Track>> =
         withContext(Dispatchers.IO) {
             val cleanId = rawBrowseOrListId.trim()
-            if (!SecurityValidators.isValidBrowseId(cleanId)) return@withContext emptyList()
+            if (!SecurityValidators.isValidBrowseId(cleanId)) return@withContext ("Playlist YT" to emptyList())
             val browseId = if (cleanId.startsWith("VL") || cleanId.startsWith("FE")) cleanId else "VL$cleanId"
 
             val payload = buildJsonObject {
@@ -363,13 +383,30 @@ class YTMusicApi(private val authStore: AuthStore) {
                 put("browseId", browseId)
             }
             val root = postWebRemix("browse", payload, useAuth = useAuth && authStore.isLoggedIn())
-                ?: return@withContext emptyList()
+                ?: return@withContext ("Playlist YT" to emptyList())
 
+            val headerTitle = findPlaylistTitle(root).ifBlank { "Playlist YT" }
             val tracks = mutableListOf<Track>()
             val seen = HashSet<String>()
             collectResponsiveTracks(root, tracks, seen, limit = 150, depth = 0)
-            tracks
+            headerTitle to tracks
         }
+
+    private fun findPlaylistTitle(root: JsonObject): String {
+        val hdr = root.obj("header")
+        val t1 = runsText(hdr?.obj("musicDetailHeaderRenderer")?.obj("title"))
+        if (t1.isNotBlank()) return t1.take(36)
+        val t2 = runsText(hdr?.obj("musicEditablePlaylistDetailHeaderRenderer")
+            ?.obj("header")?.obj("musicDetailHeaderRenderer")?.obj("title"))
+        if (t2.isNotBlank()) return t2.take(36)
+        val t3 = runsText(
+            root.obj("contents")?.obj("twoColumnBrowseResultsRenderer")
+                ?.arr("tabs")?.firstOrNull()?.asObj()?.obj("tabRenderer")?.obj("content")
+                ?.obj("sectionListRenderer")?.arr("contents")?.firstOrNull()?.asObj()
+                ?.obj("musicResponsiveHeaderRenderer")?.obj("title")
+        )
+        return t3.take(36)
+    }
 
     suspend fun fetchAccountHistory(): List<Track> = withContext(Dispatchers.IO) {
         if (!authStore.isLoggedIn()) return@withContext emptyList()
