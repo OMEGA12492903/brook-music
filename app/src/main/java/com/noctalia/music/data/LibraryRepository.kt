@@ -314,6 +314,63 @@ class LibraryRepository(context: Context) {
 
     fun exportJson(): String = json.encodeToString(_state.value)
 
+    fun buildCloudBackupPayload(): CloudBackupPayload {
+        val cur = _state.value
+        return CloudBackupPayload(
+            version = 1,
+            updatedAtMs = System.currentTimeMillis(),
+            stats = cur.stats,
+            favorites = cur.favorites,
+            playlists = cur.playlists,
+        )
+    }
+
+    /**
+     * Mezcla de forma segura y sin pérdidas una copia remota de GitHub con los datos locales:
+     * conserva siempre el máximo de reproducciones y segundos por canción, y fusiona favoritas/playlists.
+     */
+    fun mergeCloudBackup(remote: CloudBackupPayload): Boolean {
+        val cur = _state.value
+
+        val mergedStats = LinkedHashMap(cur.stats)
+        remote.stats.entries.take(MAX_STATS).forEach { (_, rStat) ->
+            val cleanTrack = SecurityValidators.sanitizeTrack(rStat.track) ?: return@forEach
+            val existing = mergedStats[cleanTrack.id]
+            mergedStats[cleanTrack.id] = TrackStat(
+                track = existing?.track ?: cleanTrack,
+                playCount = maxOf(existing?.playCount ?: 0, rStat.playCount.coerceIn(0, 100_000)),
+                listenedSec = maxOf(existing?.listenedSec ?: 0L, rStat.listenedSec.coerceIn(0L, 10_000_000L)),
+                lastPlayedMs = maxOf(existing?.lastPlayedMs ?: 0L, rStat.lastPlayedMs.coerceAtLeast(0L)),
+            )
+        }
+        val boundedStats = if (mergedStats.size > MAX_STATS) {
+            mergedStats.entries
+                .sortedByDescending { it.value.listenedSec * 2 + it.value.playCount * 30L }
+                .take(MAX_STATS)
+                .associateTo(LinkedHashMap()) { it.key to it.value }
+        } else {
+            mergedStats
+        }
+
+        val cleanRemoteFavs = remote.favorites.mapNotNull { SecurityValidators.sanitizeTrack(it) }
+        val mergedFavs = (cur.favorites + cleanRemoteFavs).distinctBy { it.id }.take(MAX_FAVORITES)
+
+        val mergedPls = LinkedHashMap(cur.playlists)
+        remote.playlists.entries.take(MAX_PLAYLISTS).forEach { (rawName, rawTracks) ->
+            val name = rawName.trim().take(36)
+            if (name.isEmpty()) return@forEach
+            val cleanTracks = rawTracks.mapNotNull { SecurityValidators.sanitizeTrack(it) }
+            val existing = mergedPls[name].orEmpty()
+            mergedPls[name] = (existing + cleanTracks).distinctBy { it.id }.take(MAX_TRACKS_PER_PLAYLIST)
+        }
+
+        val changed = boundedStats != cur.stats || mergedFavs != cur.favorites || mergedPls != cur.playlists
+        if (changed) {
+            persist(cur.copy(stats = boundedStats, favorites = mergedFavs, playlists = mergedPls))
+        }
+        return changed
+    }
+
     fun importJson(rawJson: String): Boolean {
         return try {
             val parsed = json.decodeFromString<LibraryPayload>(rawJson)

@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.noctalia.music.NoctaliaMusicApp
 import com.noctalia.music.data.AppUpdateInfo
+import com.noctalia.music.data.CloudSyncState
 import com.noctalia.music.data.LibraryPayload
 import com.noctalia.music.data.OfflineState
 import com.noctalia.music.data.RemotePlaylist
@@ -48,6 +49,7 @@ class NoctaliaViewModel : ViewModel() {
     val api = app.api
     val library = app.library
     val updater = app.updater
+    val cloudSync = app.cloudSync
     val offlineCache = app.offlineCache
     val audioEffects = app.audioEffects
     val player = app.playerController
@@ -56,6 +58,7 @@ class NoctaliaViewModel : ViewModel() {
     val libraryState: StateFlow<LibraryPayload> = library.state
     val offlineState: StateFlow<OfflineState> = offlineCache.state
     val audioFxState: StateFlow<AudioFxState> = audioEffects.state
+    val cloudSyncState: StateFlow<CloudSyncState> = cloudSync.state
 
     private val _ui = MutableStateFlow(
         MainUiState(
@@ -351,5 +354,35 @@ class NoctaliaViewModel : ViewModel() {
 
     fun openReleasesPage() {
         updater.openReleasesInBrowser()
+    }
+
+    fun saveCloudBackupToken(rawToken: String) {
+        if (!cloudSync.saveToken(rawToken)) {
+            showMessage("Token no válido. Pega tu Fine-Grained Token de GitHub.")
+            return
+        }
+        showMessage("Token cifrado guardado. Sincronizando con brook-backup...")
+        syncCloudBackupNow()
+    }
+
+    fun syncCloudBackupNow() {
+        viewModelScope.launch {
+            val res = cloudSync.syncNow(silent = false)
+            res.onSuccess { msg -> showMessage(msg) }
+                .onFailure { err -> showMessage(err.message ?: "Error al sincronizar con GitHub.") }
+        }
+    }
+
+    fun restoreCloudBackup() {
+        viewModelScope.launch {
+            val res = cloudSync.restoreFromCloud()
+            res.onSuccess { msg -> showMessage(msg) }
+                .onFailure { err -> showMessage(err.message ?: "Error al restaurar desde GitHub.") }
+        }
+    }
+
+    fun disconnectCloudBackup() {
+        cloudSync.clearToken()
+        showMessage("Copia en la nube desconectada y token borrado.")
     }
 }

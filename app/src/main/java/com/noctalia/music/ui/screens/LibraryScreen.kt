@@ -29,6 +29,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.rounded.AccountCircle
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.CloudDone
+import androidx.compose.material.icons.rounded.CloudSync
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.PlayArrow
@@ -54,9 +57,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.noctalia.music.data.CloudSyncState
+import com.noctalia.music.data.GitHubCloudSync
 import com.noctalia.music.data.LibraryPayload
 import com.noctalia.music.data.OfflineState
 import com.noctalia.music.data.RemotePlaylist
@@ -76,6 +82,7 @@ fun LibraryScreen(
     player: PlayerUiState,
     library: LibraryPayload,
     offline: OfflineState,
+    cloudSync: CloudSyncState,
     activeTab: String,
     onTabChange: (String) -> Unit,
     onPlayTrack: (Track) -> Unit,
@@ -106,11 +113,18 @@ fun LibraryScreen(
     onCheckUpdate: () -> Unit,
     onDownloadUpdate: () -> Unit,
     onOpenReleases: () -> Unit,
+    onSaveCloudToken: (String) -> Unit,
+    onSyncCloudNow: () -> Unit,
+    onRestoreCloud: () -> Unit,
+    onToggleCloudAutoSync: (Boolean) -> Unit,
+    onDisconnectCloud: () -> Unit,
+    onOpenCreateTokenPage: () -> Unit,
 ) {
     var selectedLocalPlaylist by remember { mutableStateOf<String?>(null) }
     var showNewPlInput by remember { mutableStateOf(false) }
     var newPlName by remember { mutableStateOf("") }
     var urlInput by remember { mutableStateOf("") }
+    var cloudTokenInput by remember { mutableStateOf("") }
 
     val favIds = remember(library.favorites) { library.favorites.map { it.id }.toSet() }
 
@@ -473,12 +487,56 @@ fun LibraryScreen(
                                 modifier = Modifier.padding(16.dp),
                                 verticalArrangement = Arrangement.spacedBy(10.dp),
                             ) {
-                                Text(
-                                    text = "Brook Stats · 100% local",
-                                    color = NoctaliaColors.CyanGlow,
-                                    fontSize = 16.sp,
-                                    fontWeight = FontWeight.ExtraBold,
-                                )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        text = "Brook Stats",
+                                        color = NoctaliaColors.CyanGlow,
+                                        fontSize = 16.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                    )
+                                    Row(
+                                        modifier = Modifier
+                                            .clickable { onTabChange("sync") }
+                                            .padding(vertical = 2.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                                    ) {
+                                        Icon(
+                                            imageVector = if (cloudSync.configured && cloudSync.lastError == null) {
+                                                Icons.Rounded.CloudDone
+                                            } else {
+                                                Icons.Rounded.CloudSync
+                                            },
+                                            contentDescription = null,
+                                            tint = when {
+                                                cloudSync.lastError != null -> NoctaliaColors.Danger
+                                                cloudSync.configured -> NoctaliaColors.CyanGlow
+                                                else -> NoctaliaColors.TextMuted
+                                            },
+                                            modifier = Modifier.size(16.dp),
+                                        )
+                                        Text(
+                                            text = when {
+                                                !cloudSync.configured -> "Activar copia GitHub →"
+                                                cloudSync.syncing -> "Sincronizando..."
+                                                cloudSync.lastError != null -> "Error copia · Revisar"
+                                                cloudSync.lastSyncTimeText.isNotBlank() -> "GitHub · ${cloudSync.lastSyncTimeText}"
+                                                else -> "GitHub conectado"
+                                            },
+                                            color = when {
+                                                cloudSync.lastError != null -> NoctaliaColors.Danger
+                                                cloudSync.configured -> NoctaliaColors.Cyan
+                                                else -> NoctaliaColors.TextMuted
+                                            },
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                        )
+                                    }
+                                }
                                 val mins = totalSec / 60L
                                 val timeLabel = if (mins >= 60L) "${mins / 60L}h ${mins % 60L}m" else "${mins} min"
                                 Row(
@@ -886,6 +944,227 @@ fun LibraryScreen(
                                     fontWeight = FontWeight.SemiBold,
                                     modifier = Modifier.clickable(onClick = onOpenReleases),
                                 )
+                            }
+                        }
+                    }
+
+                    // Tarjeta de Copia en la Nube Privada (GitHub · brook-backup)
+                    item {
+                        NoctaliaGlassCard(cornerRadius = 18.dp, strong = true, modifier = Modifier.fillMaxWidth()) {
+                            Column(
+                                modifier = Modifier.padding(16.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = "Copia en la nube (GitHub)",
+                                            color = NoctaliaColors.CyanGlow,
+                                            fontSize = 16.sp,
+                                            fontWeight = FontWeight.ExtraBold,
+                                        )
+                                        Text(
+                                            text = "Repo privado: ${GitHubCloudSync.BACKUP_REPO_SLUG}",
+                                            color = NoctaliaColors.TextMuted,
+                                            fontSize = 12.sp,
+                                        )
+                                    }
+                                    Icon(
+                                        imageVector = if (cloudSync.configured) Icons.Rounded.CloudDone else Icons.Rounded.CloudSync,
+                                        contentDescription = null,
+                                        tint = if (cloudSync.lastError != null) NoctaliaColors.Danger else NoctaliaColors.CyanGlow,
+                                        modifier = Modifier.size(24.dp),
+                                    )
+                                }
+
+                                if (!cloudSync.configured) {
+                                    Text(
+                                        text = "Guarda automáticamente tus Brook Stats, Favoritas y Playlists en tiempo real en tu repo privado. Tu token se cifra localmente en Android Keystore.",
+                                        color = NoctaliaColors.TextMuted,
+                                        fontSize = 12.sp,
+                                        lineHeight = 17.sp,
+                                    )
+                                    OutlinedTextField(
+                                        value = cloudTokenInput,
+                                        onValueChange = { cloudTokenInput = it },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        singleLine = true,
+                                        visualTransformation = PasswordVisualTransformation(),
+                                        placeholder = {
+                                            Text(
+                                                text = "Pega tu Fine-Grained Token (github_pat_...)",
+                                                fontSize = 12.sp,
+                                                color = NoctaliaColors.TextDim,
+                                            )
+                                        },
+                                        trailingIcon = if (cloudTokenInput.isNotEmpty()) {
+                                            {
+                                                IconButton(onClick = { cloudTokenInput = "" }) {
+                                                    Icon(
+                                                        Icons.Rounded.Close,
+                                                        contentDescription = "Limpiar",
+                                                        tint = NoctaliaColors.TextMuted,
+                                                        modifier = Modifier.size(18.dp),
+                                                    )
+                                                }
+                                            }
+                                        } else {
+                                            null
+                                        },
+                                        colors = OutlinedTextFieldDefaults.colors(
+                                            focusedBorderColor = NoctaliaColors.CyanGlow,
+                                            unfocusedBorderColor = NoctaliaColors.BorderCyan,
+                                            focusedTextColor = NoctaliaColors.TextPrimary,
+                                            unfocusedTextColor = NoctaliaColors.TextPrimary,
+                                        ),
+                                    )
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    ) {
+                                        Button(
+                                            onClick = {
+                                                val tokenToSave = cloudTokenInput
+                                                cloudTokenInput = ""
+                                                onSaveCloudToken(tokenToSave)
+                                            },
+                                            enabled = cloudTokenInput.isNotBlank(),
+                                            modifier = Modifier.weight(1f),
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = NoctaliaColors.Cyan,
+                                                contentColor = NoctaliaColors.OnCyan,
+                                            ),
+                                            shape = RoundedCornerShape(14.dp),
+                                        ) {
+                                            Text("Conectar y guardar", fontWeight = FontWeight.ExtraBold, fontSize = 12.sp)
+                                        }
+                                        Button(
+                                            onClick = onOpenCreateTokenPage,
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = NoctaliaColors.Glass,
+                                                contentColor = NoctaliaColors.TextPrimary,
+                                            ),
+                                            shape = RoundedCornerShape(14.dp),
+                                        ) {
+                                            Text("Crear token", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                        }
+                                    }
+                                } else {
+                                    if (cloudSync.syncing) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        ) {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(16.dp),
+                                                color = NoctaliaColors.CyanGlow,
+                                                strokeWidth = 2.dp,
+                                            )
+                                            Text(
+                                                text = "Sincronizando con brook-backup...",
+                                                color = NoctaliaColors.CyanGlow,
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Bold,
+                                            )
+                                        }
+                                    } else {
+                                        Text(
+                                            text = if (cloudSync.lastSyncTimeText.isNotBlank()) {
+                                                "Conectado · Última copia: ${cloudSync.lastSyncTimeText}"
+                                            } else {
+                                                "Conectado · Listo para sincronizar"
+                                            },
+                                            color = NoctaliaColors.TextPrimary,
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.Bold,
+                                        )
+                                    }
+
+                                    if (cloudSync.lastError != null) {
+                                        Text(
+                                            text = cloudSync.lastError,
+                                            color = NoctaliaColors.Danger,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                        )
+                                    }
+
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                    ) {
+                                        Column(Modifier.weight(1f)) {
+                                            Text(
+                                                text = "Copia automática en tiempo real",
+                                                color = NoctaliaColors.TextPrimary,
+                                                fontSize = 13.sp,
+                                                fontWeight = FontWeight.Bold,
+                                            )
+                                            Text(
+                                                text = "Guarda Stats, Favoritas y Playlists automáticamente",
+                                                color = NoctaliaColors.TextMuted,
+                                                fontSize = 11.sp,
+                                            )
+                                        }
+                                        Switch(
+                                            checked = cloudSync.autoSyncEnabled,
+                                            onCheckedChange = onToggleCloudAutoSync,
+                                            colors = SwitchDefaults.colors(
+                                                checkedThumbColor = NoctaliaColors.OnCyan,
+                                                checkedTrackColor = NoctaliaColors.Cyan,
+                                            ),
+                                        )
+                                    }
+
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    ) {
+                                        Button(
+                                            onClick = onSyncCloudNow,
+                                            enabled = !cloudSync.syncing,
+                                            modifier = Modifier.weight(1f),
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = NoctaliaColors.Cyan,
+                                                contentColor = NoctaliaColors.OnCyan,
+                                            ),
+                                            shape = RoundedCornerShape(14.dp),
+                                        ) {
+                                            Text(
+                                                text = if (cloudSync.syncing) "Guardando..." else "Sincronizar ahora",
+                                                fontWeight = FontWeight.ExtraBold,
+                                                fontSize = 12.sp,
+                                            )
+                                        }
+                                        Button(
+                                            onClick = onRestoreCloud,
+                                            enabled = !cloudSync.syncing,
+                                            modifier = Modifier.weight(1f),
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = NoctaliaColors.Glass,
+                                                contentColor = NoctaliaColors.TextPrimary,
+                                            ),
+                                            shape = RoundedCornerShape(14.dp),
+                                        ) {
+                                            Text("Restaurar", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                        }
+                                    }
+
+                                    Text(
+                                        text = "Desconectar y borrar token",
+                                        color = NoctaliaColors.Danger,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier
+                                            .clickable(onClick = onDisconnectCloud)
+                                            .padding(vertical = 2.dp),
+                                    )
+                                }
                             }
                         }
                     }

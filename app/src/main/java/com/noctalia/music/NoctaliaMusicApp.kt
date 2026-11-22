@@ -5,6 +5,7 @@ import coil.ImageLoader
 import coil.ImageLoaderFactory
 import com.noctalia.music.data.AppUpdater
 import com.noctalia.music.data.AuthStore
+import com.noctalia.music.data.GitHubCloudSync
 import com.noctalia.music.data.LibraryRepository
 import com.noctalia.music.data.LyricsClient
 import com.noctalia.music.data.OfflineCacheManager
@@ -22,6 +23,8 @@ class NoctaliaMusicApp : Application(), ImageLoaderFactory {
     lateinit var library: LibraryRepository
         private set
     lateinit var updater: AppUpdater
+        private set
+    lateinit var cloudSync: GitHubCloudSync
         private set
     lateinit var lyricsClient: LyricsClient
         private set
@@ -41,6 +44,7 @@ class NoctaliaMusicApp : Application(), ImageLoaderFactory {
         api = YTMusicApi(authStore)
         library = LibraryRepository(this)
         updater = AppUpdater(this)
+        cloudSync = GitHubCloudSync(this, library)
         lyricsClient = LyricsClient()
         sponsorBlock = SponsorBlockClient()
         offlineCache = OfflineCacheManager(this, api)

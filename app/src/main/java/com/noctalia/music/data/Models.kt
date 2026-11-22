@@ -43,6 +43,15 @@ data class TrackStat(
     @SerialName("last_played_ms") val lastPlayedMs: Long = 0L,
 )
 
+@Serializable
+data class CloudBackupPayload(
+    val version: Int = 1,
+    @SerialName("updated_at_ms") val updatedAtMs: Long = 0L,
+    val stats: Map<String, TrackStat> = emptyMap(),
+    val favorites: List<Track> = emptyList(),
+    val playlists: Map<String, List<Track>> = emptyMap(),
+)
+
 /**
  * Formato 100% compatible con ~/.local/state/noctalia/music_library.json en tu PC CachyOS.
  */

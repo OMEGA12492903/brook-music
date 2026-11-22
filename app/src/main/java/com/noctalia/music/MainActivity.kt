@@ -144,6 +144,7 @@ private fun NoctaliaRootScreen(
     val library by vm.libraryState.collectAsStateWithLifecycle()
     val offline by vm.offlineState.collectAsStateWithLifecycle()
     val audioFx by vm.audioFxState.collectAsStateWithLifecycle()
+    val cloudSync by vm.cloudSyncState.collectAsStateWithLifecycle()
     val pendingShared by pendingSharedFlow.collectAsStateWithLifecycle()
 
     LaunchedEffect(pendingShared) {
@@ -318,6 +319,7 @@ private fun NoctaliaRootScreen(
                     player = player,
                     library = library,
                     offline = offline,
+                    cloudSync = cloudSync,
                     activeTab = libraryInitialTab,
                     onTabChange = { libraryInitialTab = it },
                     onPlayTrack = { vm.player.playTrack(it) },
@@ -362,6 +364,12 @@ private fun NoctaliaRootScreen(
                     onCheckUpdate = { vm.checkAppUpdate() },
                     onDownloadUpdate = { vm.downloadAndInstallUpdate() },
                     onOpenReleases = { vm.openReleasesPage() },
+                    onSaveCloudToken = { vm.saveCloudBackupToken(it) },
+                    onSyncCloudNow = { vm.syncCloudBackupNow() },
+                    onRestoreCloud = { vm.restoreCloudBackup() },
+                    onToggleCloudAutoSync = { vm.cloudSync.setAutoSyncEnabled(it) },
+                    onDisconnectCloud = { vm.disconnectCloudBackup() },
+                    onOpenCreateTokenPage = { vm.cloudSync.openTokenCreationPage() },
                 )
             }
             }
