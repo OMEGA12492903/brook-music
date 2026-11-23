@@ -20,6 +20,10 @@ class AuthStore(private val context: Context) {
     private var memoryCookie: String? = null
     @Volatile
     private var memoryLabel: String = "Cuenta YouTube Music"
+    @Volatile
+    private var memorySpotifyToken: String? = null
+    @Volatile
+    private var memorySpotifyClientToken: String? = null
 
     private fun createEncryptedPrefsOrNull(ctx: Context): SharedPreferences? {
         repeat(2) { attempt ->
@@ -83,6 +87,55 @@ class AuthStore(private val context: Context) {
         }
     }
 
+    // ─── SESIÓN CIFRADA DE SPOTIFY (INDEPENDIENTE DE YOUTUBE MUSIC) ───
+    fun saveSpotifySession(rawBearerToken: String, rawClientToken: String? = null): Boolean {
+        val cleanBearer = sanitizeSpotifyToken(rawBearerToken) ?: return false
+        val cleanClient = rawClientToken?.let { sanitizeSpotifyToken(it) }
+        memorySpotifyToken = cleanBearer
+        memorySpotifyClientToken = cleanClient
+        prefs?.edit()?.apply {
+            putString(KEY_SPOTIFY_TOKEN, cleanBearer)
+            if (cleanClient != null) {
+                putString(KEY_SPOTIFY_CLIENT_TOKEN, cleanClient)
+            } else {
+                remove(KEY_SPOTIFY_CLIENT_TOKEN)
+            }
+            apply()
+        }
+        return true
+    }
+
+    fun getSpotifyBearerToken(): String? {
+        val raw = memorySpotifyToken ?: prefs?.getString(KEY_SPOTIFY_TOKEN, null)
+        val clean = raw?.let { sanitizeSpotifyToken(it) }
+        if (clean != null) memorySpotifyToken = clean
+        return clean
+    }
+
+    fun getSpotifyClientToken(): String? {
+        val raw = memorySpotifyClientToken ?: prefs?.getString(KEY_SPOTIFY_CLIENT_TOKEN, null)
+        val clean = raw?.let { sanitizeSpotifyToken(it) }
+        if (clean != null) memorySpotifyClientToken = clean
+        return clean
+    }
+
+    fun isSpotifyLoggedIn(): Boolean = getSpotifyBearerToken() != null
+
+    fun clearSpotifySession() {
+        memorySpotifyToken = null
+        memorySpotifyClientToken = null
+        prefs?.edit()
+            ?.remove(KEY_SPOTIFY_TOKEN)
+            ?.remove(KEY_SPOTIFY_CLIENT_TOKEN)
+            ?.apply()
+        try {
+            val cm = CookieManager.getInstance()
+            cm.removeAllCookies(null)
+            cm.flush()
+        } catch (_: Exception) {
+        }
+    }
+
     fun buildSapisidHashAuthHeader(cookie: String, origin: String = "https://music.youtube.com"): String? {
         val sapisid = extractSapisid(cookie) ?: return null
         val ts = System.currentTimeMillis() / 1000L
@@ -96,8 +149,21 @@ class AuthStore(private val context: Context) {
         private const val PREFS_NAME = "noctalia_auth_secure"
         private const val KEY_COOKIE = "ytm_cookie"
         private const val KEY_LABEL = "ytm_label"
+        private const val KEY_SPOTIFY_TOKEN = "sp_bearer_token"
+        private const val KEY_SPOTIFY_CLIENT_TOKEN = "sp_client_token"
         private val CONTROL_CHARS_RE = Regex("[\\r\\n\\u0000-\\u001F\\u007F]")
         private val COOKIE_NAME_RE = Regex("^[A-Za-z0-9_.-]{1,64}$")
+        private val SPOTIFY_TOKEN_RE = Regex("^[A-Za-z0-9._~+/=-]{20,2048}$")
+
+        fun sanitizeSpotifyToken(raw: String?): String? {
+            val clean = raw
+                ?.removePrefix("Bearer ")
+                ?.removePrefix("bearer ")
+                ?.replace(CONTROL_CHARS_RE, "")
+                ?.trim()
+                ?: return null
+            return clean.takeIf { SPOTIFY_TOKEN_RE.matches(it) }
+        }
 
         // Solo conservar cookies estrictamente necesarias para autenticar la biblioteca en YouTube Music
         private val ALLOWED_COOKIE_NAMES = setOf(

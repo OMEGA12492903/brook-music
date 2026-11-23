@@ -9,6 +9,9 @@ import com.noctalia.music.data.LibraryPayload
 import com.noctalia.music.data.OfflineState
 import com.noctalia.music.data.RemotePlaylist
 import com.noctalia.music.data.SecurityValidators
+import com.noctalia.music.data.SpotifyCollection
+import com.noctalia.music.data.SpotifyImportProgress
+import com.noctalia.music.data.SpotifyRemotePlaylist
 import com.noctalia.music.data.Track
 import com.noctalia.music.player.AudioFxState
 import com.noctalia.music.player.PlayerUiState
@@ -28,6 +31,10 @@ data class MainUiState(
     val selectedRemotePlaylist: RemotePlaylist? = null,
     val selectedRemoteTracks: List<Track> = emptyList(),
     val loadingAccount: Boolean = false,
+    val isSpotifyLoggedIn: Boolean = false,
+    val loadingSpotify: Boolean = false,
+    val spotifyPlaylists: List<SpotifyRemotePlaylist> = emptyList(),
+    val spotifyImport: SpotifyImportProgress = SpotifyImportProgress(),
     val homeTracks: List<Track> = emptyList(),
     val loadingHome: Boolean = false,
     val searchQuery: String = "",
@@ -47,6 +54,7 @@ class NoctaliaViewModel : ViewModel() {
     private val app = NoctaliaMusicApp.instance
     val authStore = app.authStore
     val api = app.api
+    val spotify = app.spotifyClient
     val library = app.library
     val updater = app.updater
     val cloudSync = app.cloudSync
@@ -64,17 +72,22 @@ class NoctaliaViewModel : ViewModel() {
         MainUiState(
             isLoggedIn = authStore.isLoggedIn(),
             accountLabel = authStore.getAccountLabel(),
+            isSpotifyLoggedIn = authStore.isSpotifyLoggedIn(),
         )
     )
     val ui: StateFlow<MainUiState> = _ui.asStateFlow()
 
     private var searchJob: Job? = null
     private var suggestJob: Job? = null
+    private var spotifyImportJob: Job? = null
 
     init {
         refreshHome()
         if (authStore.isLoggedIn()) {
             refreshAccountLibrary()
+        }
+        if (authStore.isSpotifyLoggedIn()) {
+            refreshSpotifyAccount(silent = true)
         }
     }
 
@@ -129,9 +142,15 @@ class NoctaliaViewModel : ViewModel() {
     }
 
     /**
-     * Procesa enlaces compartidos desde YouTube / YouTube Music / WhatsApp / Navegador (`Compartir -> Brook`).
+     * Procesa enlaces compartidos desde YouTube, YouTube Music, Spotify, WhatsApp o Navegador (`Compartir -> Brook`).
      */
     fun handleSharedYoutubeText(rawText: String?) {
+        val spotifyUrl = SecurityValidators.extractSpotifyUrlFromSharedText(rawText)
+        if (spotifyUrl != null) {
+            importSpotifyUrl(spotifyUrl, playAfterImport = true)
+            return
+        }
+
         val videoId = SecurityValidators.extractVideoIdFromSharedText(rawText)
         val playlistId = SecurityValidators.extractPlaylistIdFromSharedText(rawText)
         when {
@@ -161,7 +180,7 @@ class NoctaliaViewModel : ViewModel() {
                 }
             }
             !rawText.isNullOrBlank() -> {
-                showMessage("Enlace no reconocido como vídeo o playlist de YouTube.")
+                showMessage("Enlace no reconocido como YouTube ni Spotify.")
             }
         }
     }
@@ -273,9 +292,14 @@ class NoctaliaViewModel : ViewModel() {
     }
 
     fun importPlaylistFromUrl(urlInput: String) {
+        val spotifyUrl = SecurityValidators.extractSpotifyUrlFromSharedText(urlInput)
+        if (spotifyUrl != null) {
+            importSpotifyUrl(spotifyUrl, playAfterImport = false)
+            return
+        }
         val listId = SecurityValidators.extractPlaylistIdFromUrl(urlInput)
         if (listId == null) {
-            showMessage("Enlace de playlist no válido.")
+            showMessage("Enlace de playlist de YouTube o Spotify no válido.")
             return
         }
         viewModelScope.launch {
@@ -287,6 +311,168 @@ class NoctaliaViewModel : ViewModel() {
             } else {
                 val count = library.savePlaylistWithTracks(plTitle, tracks)
                 showMessage("Importadas $count canciones a «$plTitle».")
+            }
+        }
+    }
+
+    // ─── SPOTIFY (CUENTA, ENLACES PÚBLICOS/COMPARTIDOS Y CSV EXPORTIFY) ───
+    fun onSpotifyLoginSuccess(bearerToken: String, clientToken: String?) {
+        if (!authStore.saveSpotifySession(bearerToken, clientToken)) {
+            showMessage("No se pudo guardar la sesión de Spotify.")
+            return
+        }
+        _ui.update {
+            it.copy(
+                isSpotifyLoggedIn = true,
+                statusMessage = "Cuenta Spotify conectada. Cargando tus playlists...",
+            )
+        }
+        refreshSpotifyAccount(silent = false)
+    }
+
+    fun logoutSpotifyAccount() {
+        spotifyImportJob?.cancel()
+        authStore.clearSpotifySession()
+        _ui.update {
+            it.copy(
+                isSpotifyLoggedIn = false,
+                loadingSpotify = false,
+                spotifyPlaylists = emptyList(),
+                spotifyImport = SpotifyImportProgress(),
+                statusMessage = "Sesión de Spotify cerrada.",
+            )
+        }
+    }
+
+    fun refreshSpotifyAccount(silent: Boolean = false) {
+        if (!authStore.isSpotifyLoggedIn()) return
+        viewModelScope.launch {
+            _ui.update { it.copy(loadingSpotify = true) }
+            val res = spotify.fetchAccountPlaylists()
+            res.onSuccess { list ->
+                _ui.update { it.copy(spotifyPlaylists = list, loadingSpotify = false) }
+            }.onFailure { err ->
+                _ui.update { it.copy(loadingSpotify = false) }
+                if (!silent) {
+                    showMessage(err.message ?: "No se pudieron cargar tus listas de Spotify.")
+                }
+            }
+        }
+    }
+
+    fun cancelSpotifyImport() {
+        spotifyImportJob?.cancel()
+        spotifyImportJob = null
+        _ui.update { it.copy(spotifyImport = SpotifyImportProgress()) }
+        showMessage("Importación de Spotify cancelada.")
+    }
+
+    fun importSpotifyUrl(rawInput: String, playAfterImport: Boolean = false) {
+        if (rawInput.isBlank()) return
+        spotifyImportJob?.cancel()
+        spotifyImportJob = viewModelScope.launch {
+            _ui.update {
+                it.copy(
+                    spotifyImport = SpotifyImportProgress(title = "Leyendo Spotify...", matched = 0, total = 0, active = true),
+                )
+            }
+            val res = spotify.fetchFromUrl(rawInput)
+            res.onFailure { err ->
+                _ui.update { it.copy(spotifyImport = SpotifyImportProgress()) }
+                showMessage(err.message ?: "No se pudo leer el enlace de Spotify.")
+            }.onSuccess { collection ->
+                matchAndSaveSpotifyCollection(collection, playAfterImport = playAfterImport)
+            }
+        }
+    }
+
+    fun importSpotifyRemotePlaylist(pl: SpotifyRemotePlaylist) {
+        spotifyImportJob?.cancel()
+        spotifyImportJob = viewModelScope.launch {
+            _ui.update {
+                it.copy(
+                    spotifyImport = SpotifyImportProgress(title = pl.title, matched = 0, total = 0, active = true),
+                )
+            }
+            val res = spotify.fetchRemotePlaylistCollection(pl)
+            res.onFailure { err ->
+                _ui.update { it.copy(spotifyImport = SpotifyImportProgress()) }
+                showMessage(err.message ?: "No se pudo cargar «${pl.title}» desde Spotify.")
+            }.onSuccess { collection ->
+                matchAndSaveSpotifyCollection(collection, playAfterImport = false)
+            }
+        }
+    }
+
+    fun importSpotifyCsv(rawCsv: String, fileName: String) {
+        spotifyImportJob?.cancel()
+        spotifyImportJob = viewModelScope.launch {
+            val res = spotify.parseCsv(rawCsv, fileName)
+            res.onFailure { err ->
+                showMessage(err.message ?: "El archivo CSV no es válido.")
+            }.onSuccess { collection ->
+                matchAndSaveSpotifyCollection(collection, playAfterImport = false)
+            }
+        }
+    }
+
+    private suspend fun matchAndSaveSpotifyCollection(
+        collection: SpotifyCollection,
+        playAfterImport: Boolean,
+    ) {
+        val total = collection.tracks.size
+        _ui.update {
+            it.copy(
+                spotifyImport = SpotifyImportProgress(
+                    title = collection.title,
+                    matched = 0,
+                    total = total,
+                    active = true,
+                )
+            )
+        }
+        try {
+            val matchedTracks = spotify.matchSeedsToYouTube(collection.tracks) { done, tot ->
+                _ui.update {
+                    it.copy(
+                        spotifyImport = SpotifyImportProgress(
+                            title = collection.title,
+                            matched = done,
+                            total = tot,
+                            active = true,
+                        )
+                    )
+                }
+            }
+            _ui.update { it.copy(spotifyImport = SpotifyImportProgress()) }
+
+            if (matchedTracks.isEmpty()) {
+                showMessage("No se encontraron coincidencias de audio para «${collection.title}».")
+                return
+            }
+
+            if (collection.kind == "track") {
+                val track = matchedTracks.first()
+                player.playTrack(track, pushHistory = true)
+                showMessage("Reproduciendo desde Spotify: «${track.title}»")
+                return
+            }
+
+            val savedCount = if (collection.kind == "liked") {
+                library.mergeFavorites(matchedTracks)
+            } else {
+                library.savePlaylistWithTracks(collection.title, matchedTracks)
+            }
+
+            if (playAfterImport) {
+                player.playTrackList(matchedTracks, 0)
+            }
+
+            val destLabel = if (collection.kind == "liked") "Favoritas" else "«${collection.title}»"
+            showMessage("Spotify listo: $savedCount/$total canciones importadas a $destLabel.")
+        } finally {
+            _ui.update {
+                if (it.spotifyImport.active) it.copy(spotifyImport = SpotifyImportProgress()) else it
             }
         }
     }

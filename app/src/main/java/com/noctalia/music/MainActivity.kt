@@ -83,6 +83,7 @@ import com.noctalia.music.ui.screens.HomeScreen
 import com.noctalia.music.ui.screens.LibraryScreen
 import com.noctalia.music.ui.screens.MiniPlayerBar
 import com.noctalia.music.ui.screens.SearchScreen
+import com.noctalia.music.ui.screens.SpotifyLoginDialog
 import com.noctalia.music.ui.screens.YouTubeLoginDialog
 import com.noctalia.music.ui.theme.NoctaliaColors
 import com.noctalia.music.ui.theme.NoctaliaTheme
@@ -147,17 +148,23 @@ private fun NoctaliaRootScreen(
     val cloudSync by vm.cloudSyncState.collectAsStateWithLifecycle()
     val pendingShared by pendingSharedFlow.collectAsStateWithLifecycle()
 
-    LaunchedEffect(pendingShared) {
-        val shared = pendingShared ?: return@LaunchedEffect
-        onConsumeShared()
-        vm.handleSharedYoutubeText(shared)
-    }
-
     var currentNav by remember { mutableStateOf("home") }
     var libraryInitialTab by remember { mutableStateOf("favs") }
     var fullPlayerOpen by remember { mutableStateOf(false) }
     var showLoginDialog by remember { mutableStateOf(false) }
+    var showSpotifyLoginDialog by remember { mutableStateOf(false) }
     var actionSheetTrack by remember { mutableStateOf<Track?>(null) }
+
+    LaunchedEffect(pendingShared) {
+        val shared = pendingShared ?: return@LaunchedEffect
+        onConsumeShared()
+        val spUrl = com.noctalia.music.data.SecurityValidators.extractSpotifyUrlFromSharedText(shared)
+        if (spUrl != null && !spUrl.contains("/track/", ignoreCase = true)) {
+            libraryInitialTab = "spotify"
+            currentNav = "library"
+        }
+        vm.handleSharedYoutubeText(shared)
+    }
 
     // Pedir permiso de notificaciones multimedia en Android 13+ para mostrar controles en bloqueo
     val notifPermLauncher = rememberLauncherForActivityResult(
@@ -221,6 +228,47 @@ private fun NoctaliaRootScreen(
                 if (bytes != null) vm.importLibraryJson(bytes.toString(Charsets.UTF_8))
             } catch (_: Exception) {
                 vm.showMessage("No se pudo leer el archivo JSON (máx. 2 MB).")
+            }
+        }
+    }
+
+    val importSpotifyCsvLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            try {
+                val maxCsvBytes = 2 * 1024 * 1024 // Límite 2 MiB anti-OOM
+                val bytes = ctx.contentResolver.openInputStream(uri)?.use { stream ->
+                    val buf = java.io.ByteArrayOutputStream()
+                    val chunk = ByteArray(8192)
+                    var total = 0
+                    while (true) {
+                        val n = stream.read(chunk)
+                        if (n <= 0) break
+                        total += n
+                        if (total > maxCsvBytes) throw IllegalArgumentException("Archivo demasiado grande")
+                        buf.write(chunk, 0, n)
+                    }
+                    buf.toByteArray()
+                }
+                val displayName = try {
+                    ctx.contentResolver.query(
+                        uri,
+                        arrayOf(android.provider.OpenableColumns.DISPLAY_NAME),
+                        null,
+                        null,
+                        null,
+                    )?.use { cursor ->
+                        if (cursor.moveToFirst()) cursor.getString(0) else null
+                    }
+                } catch (_: Exception) {
+                    null
+                } ?: uri.lastPathSegment ?: "Spotify CSV"
+                if (bytes != null) {
+                    vm.importSpotifyCsv(bytes.toString(Charsets.UTF_8), displayName)
+                }
+            } catch (_: Exception) {
+                vm.showMessage("No se pudo leer el archivo CSV (máx. 2 MB).")
             }
         }
     }
@@ -370,6 +418,15 @@ private fun NoctaliaRootScreen(
                     onToggleCloudAutoSync = { vm.cloudSync.setAutoSyncEnabled(it) },
                     onDisconnectCloud = { vm.disconnectCloudBackup() },
                     onOpenCreateTokenPage = { vm.cloudSync.openTokenCreationPage() },
+                    onOpenSpotifyLogin = { showSpotifyLoginDialog = true },
+                    onLogoutSpotify = { vm.logoutSpotifyAccount() },
+                    onRefreshSpotify = { vm.refreshSpotifyAccount(silent = false) },
+                    onImportSpotifyUrl = { vm.importSpotifyUrl(it, playAfterImport = false) },
+                    onImportSpotifyRemotePlaylist = { vm.importSpotifyRemotePlaylist(it) },
+                    onImportSpotifyCsvClick = {
+                        importSpotifyCsvLauncher.launch(arrayOf("text/csv", "text/comma-separated-values", "text/plain", "*/*"))
+                    },
+                    onCancelSpotifyImport = { vm.cancelSpotifyImport() },
                 )
             }
             }
@@ -510,6 +567,17 @@ private fun NoctaliaRootScreen(
                 onLoginSuccess = { cookie ->
                     showLoginDialog = false
                     vm.onYouTubeLoginSuccess(cookie)
+                },
+            )
+        }
+
+        // Diálogo seguro de inicio de sesión de Spotify
+        if (showSpotifyLoginDialog) {
+            SpotifyLoginDialog(
+                onDismiss = { showSpotifyLoginDialog = false },
+                onLoginSuccess = { bearer, clientToken ->
+                    showSpotifyLoginDialog = false
+                    vm.onSpotifyLoginSuccess(bearer, clientToken)
                 },
             )
         }

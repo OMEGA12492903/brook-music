@@ -88,7 +88,13 @@ object SecurityValidators {
     private val THUMB_SIZE_RE = Regex("=w\\d+-h\\d+[^&]*")
     private val DUR_RE = Regex("^\\d+:\\d{2}(?::\\d{2})?$")
 
-    private val ALLOWED_THUMB_SUFFIXES = listOf(".googleusercontent.com", ".ytimg.com", ".ggpht.com")
+    private val ALLOWED_THUMB_SUFFIXES = listOf(
+        ".googleusercontent.com",
+        ".ytimg.com",
+        ".ggpht.com",
+        ".scdn.co",
+        ".spotifycdn.com",
+    )
     private val ALLOWED_STREAM_SUFFIXES = listOf(".googlevideo.com", ".youtube.com")
 
     fun isValidVideoId(id: String?): Boolean = !id.isNullOrBlank() && VIDEO_ID_RE.matches(id.trim())
@@ -242,5 +248,44 @@ object SecurityValidators {
         val query = uri.rawQuery.orEmpty()
         val listId = Regex("(?:^|&)list=([A-Za-z0-9_-]{2,80})(?:&|$)").find(query)?.groupValues?.getOrNull(1)
         return if (isValidBrowseId(listId)) listId else null
+    }
+
+    private val ALLOWED_SPOTIFY_SHARE_HOSTS = setOf(
+        "open.spotify.com",
+        "play.spotify.com",
+        "spotify.link",
+        "spoti.fi",
+        "spotify.app.link",
+    )
+    private val SPOTIFY_URI_RE = Regex("spotify:(playlist|album|track|artist):([A-Za-z0-9]{22})")
+
+    /**
+     * Extrae de forma segura un enlace o URI oficial de Spotify (playlist, álbum, canción, artista o enlace corto).
+     */
+    fun extractSpotifyUrlFromSharedText(rawText: String?): String? {
+        val bounded = rawText?.trim()?.take(2048) ?: return null
+        if (bounded.isEmpty()) return null
+
+        val uriMatch = SPOTIFY_URI_RE.find(bounded)
+        if (uriMatch != null) {
+            return "https://open.spotify.com/${uriMatch.groupValues[1]}/${uriMatch.groupValues[2]}"
+        }
+
+        val candidates = URL_IN_TEXT_RE.findAll(bounded).map { it.value }.toList()
+        for (c in candidates) {
+            val uri = try {
+                URI(c)
+            } catch (_: Exception) {
+                null
+            } ?: continue
+            val scheme = uri.scheme?.lowercase() ?: continue
+            if (scheme != "https" && scheme != "http") continue
+            if (uri.userInfo != null) continue
+            val host = uri.host?.lowercase()?.trimEnd('.') ?: continue
+            if (host in ALLOWED_SPOTIFY_SHARE_HOSTS) {
+                return if (scheme == "http") "https://${c.removePrefix("http://")}" else c
+            }
+        }
+        return null
     }
 }

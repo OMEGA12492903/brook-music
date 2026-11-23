@@ -66,6 +66,7 @@ import com.noctalia.music.data.GitHubCloudSync
 import com.noctalia.music.data.LibraryPayload
 import com.noctalia.music.data.OfflineState
 import com.noctalia.music.data.RemotePlaylist
+import com.noctalia.music.data.SpotifyRemotePlaylist
 import com.noctalia.music.data.Track
 import com.noctalia.music.player.PlayerUiState
 import com.noctalia.music.ui.MainUiState
@@ -119,11 +120,19 @@ fun LibraryScreen(
     onToggleCloudAutoSync: (Boolean) -> Unit,
     onDisconnectCloud: () -> Unit,
     onOpenCreateTokenPage: () -> Unit,
+    onOpenSpotifyLogin: () -> Unit,
+    onLogoutSpotify: () -> Unit,
+    onRefreshSpotify: () -> Unit,
+    onImportSpotifyUrl: (String) -> Unit,
+    onImportSpotifyRemotePlaylist: (SpotifyRemotePlaylist) -> Unit,
+    onImportSpotifyCsvClick: () -> Unit,
+    onCancelSpotifyImport: () -> Unit,
 ) {
     var selectedLocalPlaylist by remember { mutableStateOf<String?>(null) }
     var showNewPlInput by remember { mutableStateOf(false) }
     var newPlName by remember { mutableStateOf("") }
     var urlInput by remember { mutableStateOf("") }
+    var spotifyUrlInput by remember { mutableStateOf("") }
     var cloudTokenInput by remember { mutableStateOf("") }
 
     val favIds = remember(library.favorites) { library.favorites.map { it.id }.toSet() }
@@ -269,6 +278,13 @@ fun LibraryScreen(
             }
             item {
                 NoctaliaPillChip(
+                    label = if (ui.isSpotifyLoggedIn) "Spotify ✓" else "Spotify",
+                    active = activeTab == "spotify",
+                    onClick = { onTabChange("spotify") },
+                )
+            }
+            item {
+                NoctaliaPillChip(
                     label = "Ajustes",
                     active = activeTab == "sync",
                     onClick = { onTabChange("sync") },
@@ -276,7 +292,59 @@ fun LibraryScreen(
             }
         }
 
-        val libTabOrder = mapOf("favs" to 0, "playlists" to 1, "stats" to 2, "account" to 3, "sync" to 4)
+        if (ui.spotifyImport.active) {
+            NoctaliaGlassCard(cornerRadius = 16.dp, highlighted = true, modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = if (ui.spotifyImport.total > 0) {
+                                "Importando «${ui.spotifyImport.title}» (${ui.spotifyImport.matched}/${ui.spotifyImport.total})"
+                            } else {
+                                "Leyendo «${ui.spotifyImport.title}» desde Spotify..."
+                            },
+                            color = NoctaliaColors.CyanGlow,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = "Cancelar",
+                            color = NoctaliaColors.Danger,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.clickable(onClick = onCancelSpotifyImport),
+                        )
+                    }
+                    if (ui.spotifyImport.total > 0) {
+                        val prog = (ui.spotifyImport.matched.toFloat() / ui.spotifyImport.total.toFloat()).coerceIn(0f, 1f)
+                        LinearProgressIndicator(
+                            progress = { prog },
+                            modifier = Modifier.fillMaxWidth(),
+                            color = NoctaliaColors.CyanGlow,
+                            trackColor = Color.White.copy(alpha = 0.14f),
+                        )
+                    } else {
+                        LinearProgressIndicator(
+                            modifier = Modifier.fillMaxWidth(),
+                            color = NoctaliaColors.CyanGlow,
+                            trackColor = Color.White.copy(alpha = 0.14f),
+                        )
+                    }
+                }
+            }
+        }
+
+        val libTabOrder = mapOf("favs" to 0, "playlists" to 1, "stats" to 2, "account" to 3, "spotify" to 4, "sync" to 5)
         AnimatedContent(
             targetState = activeTab,
             transitionSpec = {
@@ -789,7 +857,7 @@ fun LibraryScreen(
                         NoctaliaGlassCard(cornerRadius = 16.dp, modifier = Modifier.fillMaxWidth()) {
                             Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Text(
-                                    text = "Importar playlist por enlace",
+                                    text = "Importar playlist por enlace (YouTube o Spotify)",
                                     color = NoctaliaColors.TextPrimary,
                                     fontSize = 14.sp,
                                     fontWeight = FontWeight.Bold,
@@ -800,7 +868,7 @@ fun LibraryScreen(
                                         onValueChange = { urlInput = it },
                                         modifier = Modifier.weight(1f),
                                         singleLine = true,
-                                        placeholder = { Text("https://music.youtube.com/playlist?list=...", fontSize = 12.sp, color = NoctaliaColors.TextDim) },
+                                        placeholder = { Text("Enlace de YouTube Music o Spotify...", fontSize = 12.sp, color = NoctaliaColors.TextDim) },
                                         colors = OutlinedTextFieldDefaults.colors(
                                             focusedBorderColor = NoctaliaColors.CyanGlow,
                                             unfocusedBorderColor = NoctaliaColors.BorderCyan,
@@ -820,6 +888,240 @@ fun LibraryScreen(
                                     ) {
                                         Text("Importar", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                                     }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            "spotify" -> {
+                LazyColumn(
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(bottom = 164.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    // 1. Importar cualquier enlace de Spotify sin necesidad de iniciar sesión
+                    item {
+                        NoctaliaGlassCard(cornerRadius = 18.dp, strong = true, modifier = Modifier.fillMaxWidth()) {
+                            Column(
+                                modifier = Modifier.padding(16.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                Text(
+                                    text = "Importar desde Spotify (sin cuenta)",
+                                    color = NoctaliaColors.CyanGlow,
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                )
+                                Text(
+                                    text = "Pega cualquier enlace de playlist, álbum, canción o artista de Spotify (o pulsa Compartir → Brook desde la app de Spotify). Brook empareja cada canción con audio Opus limpio sin anuncios.",
+                                    color = NoctaliaColors.TextMuted,
+                                    fontSize = 12.sp,
+                                    lineHeight = 17.sp,
+                                )
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    OutlinedTextField(
+                                        value = spotifyUrlInput,
+                                        onValueChange = { spotifyUrlInput = it },
+                                        modifier = Modifier.weight(1f),
+                                        singleLine = true,
+                                        placeholder = { Text("https://open.spotify.com/playlist/...", fontSize = 12.sp, color = NoctaliaColors.TextDim) },
+                                        colors = OutlinedTextFieldDefaults.colors(
+                                            focusedBorderColor = NoctaliaColors.CyanGlow,
+                                            unfocusedBorderColor = NoctaliaColors.BorderCyan,
+                                            focusedTextColor = NoctaliaColors.TextPrimary,
+                                            unfocusedTextColor = NoctaliaColors.TextPrimary,
+                                        ),
+                                    )
+                                    Button(
+                                        onClick = {
+                                            val raw = spotifyUrlInput
+                                            spotifyUrlInput = ""
+                                            onImportSpotifyUrl(raw)
+                                        },
+                                        enabled = spotifyUrlInput.isNotBlank() && !ui.spotifyImport.active,
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = NoctaliaColors.Cyan,
+                                            contentColor = NoctaliaColors.OnCyan,
+                                        ),
+                                    ) {
+                                        Text("Importar", fontWeight = FontWeight.ExtraBold, fontSize = 12.sp)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // 2. Conectar cuenta Spotify (para listas privadas, >100 canciones y Me gusta)
+                    item {
+                        NoctaliaGlassCard(cornerRadius = 18.dp, strong = true, modifier = Modifier.fillMaxWidth()) {
+                            Column(
+                                modifier = Modifier.padding(16.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Icon(
+                                        Icons.Rounded.AccountCircle,
+                                        contentDescription = null,
+                                        tint = NoctaliaColors.CyanGlow,
+                                        modifier = Modifier.size(30.dp),
+                                    )
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = if (ui.isSpotifyLoggedIn) "Cuenta Spotify conectada" else "Conectar tu cuenta Spotify",
+                                            color = NoctaliaColors.TextPrimary,
+                                            fontSize = 15.sp,
+                                            fontWeight = FontWeight.ExtraBold,
+                                        )
+                                        Text(
+                                            text = if (ui.isSpotifyLoggedIn) {
+                                                "Toca cualquier playlist abajo para importarla junto a tu biblioteca"
+                                            } else {
+                                                "Importa tus listas privadas, playlists de +100 canciones y «Canciones que te gustan»."
+                                            },
+                                            color = NoctaliaColors.TextMuted,
+                                            fontSize = 12.sp,
+                                        )
+                                    }
+                                }
+
+                                if (ui.isSpotifyLoggedIn) {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Button(
+                                            onClick = onRefreshSpotify,
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = NoctaliaColors.Cyan,
+                                                contentColor = NoctaliaColors.OnCyan,
+                                            ),
+                                            shape = RoundedCornerShape(99.dp),
+                                        ) {
+                                            Icon(Icons.Rounded.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(Modifier.width(4.dp))
+                                            Text("Actualizar", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                        }
+                                        Button(
+                                            onClick = onOpenSpotifyLogin,
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = NoctaliaColors.Glass,
+                                                contentColor = NoctaliaColors.TextPrimary,
+                                            ),
+                                            shape = RoundedCornerShape(99.dp),
+                                        ) {
+                                            Text("Reconectar", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                        }
+                                        Button(
+                                            onClick = onLogoutSpotify,
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = NoctaliaColors.Danger.copy(alpha = 0.22f),
+                                                contentColor = NoctaliaColors.Danger,
+                                            ),
+                                            shape = RoundedCornerShape(99.dp),
+                                        ) {
+                                            Icon(Icons.AutoMirrored.Rounded.Logout, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        }
+                                    }
+                                } else {
+                                    Button(
+                                        onClick = onOpenSpotifyLogin,
+                                        modifier = Modifier.fillMaxWidth(),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = NoctaliaColors.Cyan,
+                                            contentColor = NoctaliaColors.OnCyan,
+                                        ),
+                                        shape = RoundedCornerShape(14.dp),
+                                    ) {
+                                        Text("Iniciar sesión en Spotify", fontWeight = FontWeight.ExtraBold)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (ui.isSpotifyLoggedIn) {
+                        if (ui.loadingSpotify && ui.spotifyPlaylists.isEmpty()) {
+                            item {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 20.dp),
+                                    horizontalArrangement = Arrangement.Center,
+                                ) {
+                                    CircularProgressIndicator(color = NoctaliaColors.CyanGlow, strokeWidth = 2.5.dp)
+                                }
+                            }
+                        } else {
+                            items(ui.spotifyPlaylists, key = { "sp_${it.id}" }) { pl ->
+                                NoctaliaGlassCard(
+                                    cornerRadius = 16.dp,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable(enabled = !ui.spotifyImport.active) {
+                                            onImportSpotifyRemotePlaylist(pl)
+                                        },
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(10.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        TrackCoverImage(url = pl.thumb, size = 50.dp, cornerRadius = 12.dp)
+                                        Spacer(Modifier.width(12.dp))
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = pl.title,
+                                                color = NoctaliaColors.TextPrimary,
+                                                fontSize = 14.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                            Text(
+                                                text = pl.subtitle,
+                                                color = NoctaliaColors.TextMuted,
+                                                fontSize = 12.sp,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                        }
+                                        Icon(
+                                            Icons.Rounded.Download,
+                                            contentDescription = "Importar",
+                                            tint = NoctaliaColors.CyanGlow,
+                                            modifier = Modifier.size(20.dp),
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // 3. Importar archivo CSV (Exportify / TuneMyMusic) sin cuenta
+                    item {
+                        NoctaliaGlassCard(cornerRadius = 16.dp, modifier = Modifier.fillMaxWidth()) {
+                            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text(
+                                    text = "Importar archivo CSV de Spotify (Exportify)",
+                                    color = NoctaliaColors.TextPrimary,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold,
+                                )
+                                Text(
+                                    text = "Ideal si tienes playlists enormes o prefieres importar tus listas desde un archivo .csv de Exportify / TuneMyMusic.",
+                                    color = NoctaliaColors.TextMuted,
+                                    fontSize = 12.sp,
+                                    lineHeight = 17.sp,
+                                )
+                                Button(
+                                    onClick = onImportSpotifyCsvClick,
+                                    enabled = !ui.spotifyImport.active,
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = NoctaliaColors.Glass,
+                                        contentColor = NoctaliaColors.TextPrimary,
+                                    ),
+                                    shape = RoundedCornerShape(14.dp),
+                                ) {
+                                    Text("Seleccionar archivo .csv", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                                 }
                             }
                         }

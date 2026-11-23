@@ -10,6 +10,7 @@ import com.noctalia.music.data.LibraryRepository
 import com.noctalia.music.data.LyricsClient
 import com.noctalia.music.data.OfflineCacheManager
 import com.noctalia.music.data.SponsorBlockClient
+import com.noctalia.music.data.SpotifyClient
 import com.noctalia.music.data.YTMusicApi
 import com.noctalia.music.player.AudioEffectsController
 import com.noctalia.music.player.MusicPlayerController
@@ -19,6 +20,8 @@ class NoctaliaMusicApp : Application(), ImageLoaderFactory {
     lateinit var authStore: AuthStore
         private set
     lateinit var api: YTMusicApi
+        private set
+    lateinit var spotifyClient: SpotifyClient
         private set
     lateinit var library: LibraryRepository
         private set
@@ -42,6 +45,7 @@ class NoctaliaMusicApp : Application(), ImageLoaderFactory {
         instance = this
         authStore = AuthStore(this)
         api = YTMusicApi(authStore)
+        spotifyClient = SpotifyClient(authStore, api)
         library = LibraryRepository(this)
         updater = AppUpdater(this)
         cloudSync = GitHubCloudSync(this, library)
