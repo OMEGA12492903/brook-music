@@ -53,11 +53,13 @@ import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.random.Random
 
-enum class PlayerBgStyle(val id: String, val label: String) {
-    LIQUID("liquid", "Líquido"),
-    VORTEX("vortex", "Difuminado"),
-    AURORA("aurora", "Aurora"),
-    PARTICLES("particles", "Partículas");
+enum class PlayerBgStyle(val id: String, val label: String, val animated: Boolean) {
+    LIQUID("liquid", "Líquido", true),
+    VORTEX("vortex", "Difuminado", true),
+    AURORA("aurora", "Aurora", true),
+    PARTICLES("particles", "Partículas", true),
+    STATIC("static", "Estático", false),
+    OLED("oled", "OLED puro", false);
 
     companion object {
         fun fromId(id: String?): PlayerBgStyle =
@@ -397,13 +399,25 @@ fun BrookAnimatedPlayerBackground(
     val c4 by animateColorAsState(activePalette.getOrElse(4) { NoctaliaColors.Pink }, colorSpec, label = "bg_c4")
     val baseColor by animateColorAsState(targetBase, colorSpec, label = "bg_base")
 
-    // Reloj continuo con aceleración/desaceleración suave; se detiene a 0% GPU cuando la app va a segundo plano
+    // Modo Negro OLED puro (#000000): 0% animación, 0 GPU y píxeles apagados en pantallas AMOLED
+    if (style == PlayerBgStyle.OLED) {
+        Box(
+            modifier = modifier
+                .fillMaxSize()
+                .background(Color.Black),
+            content = content,
+        )
+        return
+    }
+
+    // Reloj continuo con aceleración/desaceleración suave; se detiene a 0% GPU en modo Estático o en segundo plano
     var animTime by remember { mutableFloatStateOf(0f) }
     var playingState by remember { mutableStateOf(isPlaying) }
     playingState = isPlaying
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    LaunchedEffect(lifecycleOwner) {
+    LaunchedEffect(lifecycleOwner, style.animated) {
+        if (!style.animated) return@LaunchedEffect
         lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
             var lastNanos = 0L
             var speedFactor = if (playingState) 1f else 0.18f
@@ -639,6 +653,31 @@ fun BrookAnimatedPlayerBackground(
                         )
                     }
                 }
+
+                PlayerBgStyle.STATIC -> {
+                    // Fondo estático elegante con los colores de la portada (0 fps en bucle, mínimo consumo)
+                    drawRect(
+                        brush = Brush.verticalGradient(
+                            colorStops = arrayOf(
+                                0.0f to c0.copy(alpha = 0.50f),
+                                0.42f to c1.copy(alpha = 0.30f),
+                                0.78f to baseColor.copy(alpha = 0.92f),
+                                1.0f to Color(0xFF05080D),
+                            )
+                        )
+                    )
+                    drawCircle(
+                        brush = Brush.radialGradient(
+                            colors = listOf(c2.copy(alpha = 0.30f), Color.Transparent),
+                            center = Offset(w * 0.5f, h * 0.28f),
+                            radius = w * 0.85f,
+                        ),
+                        center = Offset(w * 0.5f, h * 0.28f),
+                        radius = w * 0.85f,
+                    )
+                }
+
+                PlayerBgStyle.OLED -> Unit
             }
 
             // Velo sutil de contraste para que textos blancos y botones cian se lean perfectos siempre

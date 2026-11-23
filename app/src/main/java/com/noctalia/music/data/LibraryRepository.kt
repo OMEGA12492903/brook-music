@@ -156,7 +156,7 @@ class LibraryRepository(context: Context) {
         private const val MAX_TRACKS_PER_PLAYLIST = 1000
         private const val MAX_SEARCH_HISTORY = 12
         private const val MAX_STATS = 500
-        private val ALLOWED_BG_STYLES = setOf("liquid", "vortex", "aurora", "particles")
+        private val ALLOWED_BG_STYLES = setOf("liquid", "vortex", "aurora", "particles", "static", "oled")
         private val ALLOWED_LOOP_STATUS = setOf("None", "Track", "Playlist")
     }
 
@@ -244,8 +244,9 @@ class LibraryRepository(context: Context) {
     }
 
     fun updatePlayerBgStyle(styleId: String) {
+        val safe = if (styleId in ALLOWED_BG_STYLES) styleId else "liquid"
         val cur = _state.value
-        persist(cur.copy(settings = cur.settings.copy(bgStyle = styleId)))
+        persist(cur.copy(settings = cur.settings.copy(bgStyle = safe)))
     }
 
     fun updatePlayerBgUseCoverColors(useCover: Boolean) {

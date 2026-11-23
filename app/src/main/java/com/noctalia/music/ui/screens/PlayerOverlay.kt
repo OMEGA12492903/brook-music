@@ -711,9 +711,9 @@ fun FullPlayerOverlay(
                     ) {
                         NoctaliaGlassCard(cornerRadius = 18.dp, strong = true, modifier = Modifier.fillMaxWidth()) {
                             Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                Text("Fondo animado", color = NoctaliaColors.CyanGlow, fontSize = 15.sp, fontWeight = FontWeight.ExtraBold)
+                                Text("Fondo del reproductor", color = NoctaliaColors.CyanGlow, fontSize = 15.sp, fontWeight = FontWeight.ExtraBold)
                                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    items(PlayerBgStyle.entries) { st ->
+                                    items(PlayerBgStyle.entries, key = { it.id }, contentType = { "bg_style" }) { st ->
                                         NoctaliaPillChip(
                                             label = st.label,
                                             active = bgStyle == st,

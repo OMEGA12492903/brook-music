@@ -20,10 +20,19 @@ import kotlinx.coroutines.flow.update
 enum class EqPreset(val label: String, val gainsMb: IntArray) {
     FLAT("Plano", intArrayOf(0, 0, 0, 0, 0)),
     BASS("Bass Boost", intArrayOf(550, 350, 50, 100, 200)),
+    URBANO("Urbano / Reggaetón", intArrayOf(500, 250, 50, 200, 150)),
+    HIPHOP("Hip-Hop / Rap", intArrayOf(550, 300, -50, 150, 200)),
     PHONK("Phonk", intArrayOf(650, 400, -100, 250, 450)),
     ELECTRO("Electrónica", intArrayOf(450, 200, 0, 250, 450)),
+    POP("Pop", intArrayOf(150, 250, 100, 250, 200)),
     ROCK("Rock", intArrayOf(350, 150, -100, 250, 400)),
+    METAL("Metal", intArrayOf(450, 150, -250, 350, 450)),
+    ACOUSTIC("Acústico / Indie", intArrayOf(100, 200, 250, 300, 200)),
     VOCAL("Vocal", intArrayOf(-150, 100, 400, 350, 150)),
+    LOFI("Lo-Fi / Chill", intArrayOf(300, 200, 50, -150, -350)),
+    CLASSICAL("Clásica / OST", intArrayOf(200, 100, -50, 250, 400)),
+    NIGHT("Modo Noche", intArrayOf(-400, -150, 350, 300, -200)),
+    CAR("Coche / Altavoz", intArrayOf(300, 100, 150, 300, 350)),
     CUSTOM("Personalizado", intArrayOf(0, 0, 0, 0, 0)),
 }
 

@@ -1644,18 +1644,18 @@ fun LibraryScreen(
                                 verticalArrangement = Arrangement.spacedBy(10.dp),
                             ) {
                                 Text(
-                                    text = "Fondo animado del reproductor",
+                                    text = "Fondo del reproductor",
                                     color = NoctaliaColors.CyanGlow,
                                     fontSize = 16.sp,
                                     fontWeight = FontWeight.ExtraBold,
                                 )
                                 Text(
-                                    text = "Mantiene la portada fija y nítida mientras el fondo fluye al ritmo de la música.",
+                                    text = "Elige estilos animados al ritmo de la música, degradado estático o Negro OLED puro para ahorrar batería.",
                                     color = NoctaliaColors.TextMuted,
                                     fontSize = 12.sp,
                                 )
                                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    items(PlayerBgStyle.entries) { st ->
+                                    items(PlayerBgStyle.entries, key = { it.id }, contentType = { "bg_style" }) { st ->
                                         NoctaliaPillChip(
                                             label = st.label,
                                             active = currentBgStyle == st,
