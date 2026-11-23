@@ -379,6 +379,10 @@ fun BrookAnimatedPlayerBackground(
             prevSoftBitmap = null
         } else {
             artData = next
+            if (bitmapCrossfade.value < 1f) {
+                bitmapCrossfade.animateTo(1f, tween(durationMillis = 350, easing = FastOutSlowInEasing))
+            }
+            prevSoftBitmap = null
         }
     }
 
@@ -442,6 +446,7 @@ fun BrookAnimatedPlayerBackground(
         Canvas(modifier = Modifier.fillMaxSize()) {
             val w = size.width
             val h = size.height
+            if (w < 2f || h < 2f) return@Canvas
             val t = animTime
 
             drawRect(color = baseColor)
@@ -517,7 +522,7 @@ fun BrookAnimatedPlayerBackground(
                 PlayerBgStyle.VORTEX -> {
                     val img = if (useCoverColors) artData.softBitmap else null
                     val oldImg = if (useCoverColors) prevSoftBitmap else null
-                    val fade = bitmapCrossfade.value
+                    val fade = bitmapCrossfade.value.coerceIn(0f, 1f)
 
                     // Diagonal completa * 1.38 garantiza que incluso girando 45° y desplazándose suavemente,
                     // los bordes del cuadrado SIEMPRE quedan ~200px fuera de las 4 esquinas de la pantalla.
