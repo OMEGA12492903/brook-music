@@ -2,6 +2,7 @@ package com.noctalia.music.player
 
 import android.app.PendingIntent
 import android.content.Intent
+import android.net.Uri
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
@@ -11,6 +12,7 @@ import androidx.media3.common.MimeTypes
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
@@ -30,12 +32,33 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import java.io.File
+import java.io.IOException
 
 /**
- * Servicio en primer plano (Media3 MediaSessionService) endurecido:
+ * Señal interna lanzada por `ResolvingDataSource` cuando YouTube solo ofrece HLS para una pista,
+ * permitiendo que el reproductor cambie inmediatamente a `HlsMediaSource` sin perder Foreground.
+ */
+class HlsStreamRequiredException(
+    val videoId: String,
+    val hlsUrl: String,
+    val qualityLabel: String,
+) : IOException("HLS stream required for $videoId")
+
+/**
+ * Error tipado que identifica exactamente qué `videoId` falló al resolverse en `ResolvingDataSource`,
+ * impidiendo que un fallo al precargar la pista siguiente interrumpa la pista que está sonando.
+ */
+class TrackResolveFailedException(
+    val videoId: String,
+    cause: Throwable? = null,
+) : IOException("Failed to resolve audio stream for $videoId", cause)
+
+/**
+ * Servicio en primer plano (Media3 MediaSessionService) endurecido con reproducción continua
+ * sin cortes en segundo plano:
  * - Solo nuestra propia app (`com.noctalia.music`) puede inyectar URLs/MediaItems.
- * - Controladores externos (pantalla de bloqueo, SystemUI, Bluetooth, coche) solo reciben
- *   comandos seguros de reproducción (Play/Pause/Next/Prev/Seek/Metadata), bloqueando SET_MEDIA_ITEM.
+ * - `ResolvingDataSource` resuelve dinámicamente `brook-track://yt/<videoId>` en el hilo Loader
+ *   de ExoPlayer mientras mantiene Foreground Service + `WAKE_MODE_NETWORK` sin pasar por `STATE_ENDED`.
  * - ExoPlayer usa `streamHttpClient` sin cookies y validando cada salto HTTPS de googlevideo.com.
  */
 class NoctaliaPlaybackService : MediaSessionService() {
@@ -52,7 +75,46 @@ class NoctaliaPlaybackService : MediaSessionService() {
         val httpFactory = OkHttpDataSource.Factory(app.api.streamHttpClient)
             .setUserAgent(YTMusicApi.VISIONOS_UA)
         // DefaultDataSource permite reproducir tanto streams HTTPS validados como archivos locales de nuestra caché offline
-        val dataSourceFactory = DefaultDataSource.Factory(this, httpFactory)
+        val baseDataSourceFactory = DefaultDataSource.Factory(this, httpFactory)
+
+        // ResolvingDataSource permite encolar la siguiente canción directamente dentro de ExoPlayer:
+        // al terminar una canción en segundo plano, ExoPlayer pasa directamente a la siguiente
+        // sin entrar nunca en STATE_ENDED ni perder el servicio en primer plano ni la notificación.
+        val resolvingDataSourceFactory = ResolvingDataSource.Factory(baseDataSourceFactory) { dataSpec ->
+            val uri = dataSpec.uri
+            if (uri.scheme == BROOK_TRACK_SCHEME) {
+                val videoId = extractBrookTrackVideoId(uri)
+                    ?: throw IOException("Invalid brook-track videoId")
+
+                // 1. Caché offline local (instantáneo, 0 datos)
+                val localFile = app.offlineCache.getLocalFile(videoId)
+                if (localFile != null) {
+                    app.playerController.onStreamQualityResolved(videoId, "OFFLINE · OPUS")
+                    return@Factory dataSpec.withUri(Uri.fromFile(localFile))
+                }
+
+                // 2. Resolver URL Opus/AAC (hit instantáneo si ya se precargó, o petición en segundo plano)
+                val resolved = app.api.resolveStreamUrlBlocking(
+                    videoId = videoId,
+                    forceRefresh = false,
+                    preferHls = false,
+                ) ?: throw TrackResolveFailedException(videoId)
+
+                if (!SecurityValidators.isSafeStreamUrl(resolved.url)) {
+                    throw TrackResolveFailedException(videoId, SecurityException("Unsafe stream URL blocked"))
+                }
+
+                // 3. Si YouTube devolvió HLS solo-audio, solicitar cambio limpio a HlsMediaSource
+                if (isHlsUrlOrMime(resolved.url, resolved.mimeType)) {
+                    throw HlsStreamRequiredException(videoId, resolved.url, resolved.qualityLabel)
+                }
+
+                app.playerController.onStreamQualityResolved(videoId, resolved.qualityLabel)
+                dataSpec.withUri(Uri.parse(resolved.url))
+            } else {
+                dataSpec
+            }
+        }
 
         val audioAttrs = AudioAttributes.Builder()
             .setUsage(C.USAGE_MEDIA)
@@ -60,7 +122,7 @@ class NoctaliaPlaybackService : MediaSessionService() {
             .build()
 
         val player = ExoPlayer.Builder(this)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
+            .setMediaSourceFactory(DefaultMediaSourceFactory(resolvingDataSourceFactory))
             .setAudioAttributes(audioAttrs, true)
             .setHandleAudioBecomingNoisy(true)
             .setWakeMode(C.WAKE_MODE_NETWORK)
@@ -89,6 +151,9 @@ class NoctaliaPlaybackService : MediaSessionService() {
                 }
             }
         })
+
+        // Vincular directamente el ExoPlayer real al controlador para cero pérdidas de eventos en segundo plano
+        app.playerController.attachServicePlayer(player)
 
         val wrappedPlayer = object : ForwardingPlayer(player) {
             override fun getAvailableCommands(): Player.Commands {
@@ -169,6 +234,7 @@ class NoctaliaPlaybackService : MediaSessionService() {
                     val uri = item.localConfiguration?.uri ?: item.requestMetadata.mediaUri ?: return@mapNotNull null
                     val uriStr = uri.toString()
                     val allowed = when {
+                        extractBrookTrackVideoId(uri) != null -> true
                         SecurityValidators.isSafeStreamUrl(uriStr) -> true
                         uri.scheme == "file" && !uri.path.isNullOrBlank() -> try {
                             File(uri.path!!).canonicalPath.startsWith("$offlineRoot/")
@@ -181,10 +247,7 @@ class NoctaliaPlaybackService : MediaSessionService() {
                         null
                     } else {
                         val b = item.buildUpon().setUri(uri)
-                        if (uriStr.contains("/hls_", ignoreCase = true) ||
-                            uriStr.contains("manifest.googlevideo.com", ignoreCase = true) ||
-                            uriStr.endsWith(".m3u8", ignoreCase = true)
-                        ) {
+                        if (isHlsUrlOrMime(uriStr, item.localConfiguration?.mimeType)) {
                             b.setMimeType(MimeTypes.APPLICATION_M3U8)
                         }
                         b.build()
@@ -202,15 +265,27 @@ class NoctaliaPlaybackService : MediaSessionService() {
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
 
+    override fun onUpdateNotification(session: MediaSession, startInForegroundRequired: Boolean) {
+        val keepFg = startInForegroundRequired || NoctaliaMusicApp.instance.playerController.isTransitioningNext
+        try {
+            super.onUpdateNotification(session, keepFg)
+        } catch (_: Throwable) {
+        }
+    }
+
     override fun onTaskRemoved(rootIntent: Intent?) {
         val p = exoPlayer
-        if (p == null || !p.playWhenReady || p.mediaItemCount == 0) {
+        val transitioning = NoctaliaMusicApp.instance.playerController.isTransitioningNext
+        val keepAlive = p != null && (p.playWhenReady || p.isPlaying || transitioning) &&
+            (p.mediaItemCount > 0 || transitioning)
+        if (!keepAlive) {
             stopSelf()
         }
     }
 
     override fun onDestroy() {
         serviceScope.cancel()
+        try { NoctaliaMusicApp.instance.playerController.detachServicePlayer(exoPlayer) } catch (_: Exception) {}
         try { NoctaliaMusicApp.instance.audioEffects.release() } catch (_: Exception) {}
         mediaSession?.run {
             release()
@@ -219,5 +294,27 @@ class NoctaliaPlaybackService : MediaSessionService() {
         exoPlayer?.release()
         exoPlayer = null
         super.onDestroy()
+    }
+
+    companion object {
+        const val BROOK_TRACK_SCHEME = "brook-track"
+        const val BROOK_TRACK_HOST = "yt"
+
+        fun buildBrookTrackUri(videoId: String): Uri =
+            Uri.parse("$BROOK_TRACK_SCHEME://$BROOK_TRACK_HOST/$videoId")
+
+        fun extractBrookTrackVideoId(uri: Uri?): String? {
+            if (uri == null || uri.scheme != BROOK_TRACK_SCHEME || uri.host != BROOK_TRACK_HOST) return null
+            val seg = uri.lastPathSegment ?: return null
+            return seg.takeIf { SecurityValidators.isValidVideoId(it) }
+        }
+
+        fun isHlsUrlOrMime(url: String, mimeType: String?): Boolean {
+            return mimeType.equals("application/x-mpegURL", ignoreCase = true) ||
+                mimeType.equals(MimeTypes.APPLICATION_M3U8, ignoreCase = true) ||
+                url.contains("/hls_", ignoreCase = true) ||
+                url.contains("manifest.googlevideo.com", ignoreCase = true) ||
+                url.endsWith(".m3u8", ignoreCase = true)
+        }
     }
 }

@@ -399,6 +399,18 @@ class YTMusicApi(private val authStore: AuthStore) {
         }
     }
 
+    fun getCachedStream(videoId: String, preferHls: Boolean = false): ResolvedStream? {
+        if (!SecurityValidators.isValidVideoId(videoId)) return null
+        val cacheKey = if (preferHls) "$videoId:hls" else videoId
+        val cached = streamCache[cacheKey] ?: return null
+        return if ((System.currentTimeMillis() - cached.fetchedAtMs) < STREAM_CACHE_TTL_MS) cached else null
+    }
+
+    fun invalidateCachedStream(videoId: String) {
+        streamCache.remove(videoId)
+        streamCache.remove("$videoId:hls")
+    }
+
     /**
      * Resuelve el stream de audio directo de máxima calidad gratis (Opus 160k itag 251 -> AAC 130k itag 140)
      * con fallback automático a HLS solo-audio (itag 234 AAC 128k).
@@ -409,30 +421,43 @@ class YTMusicApi(private val authStore: AuthStore) {
         forceRefresh: Boolean = false,
         preferHls: Boolean = false,
     ): ResolvedStream? = withContext(Dispatchers.IO) {
-        if (!SecurityValidators.isValidVideoId(videoId)) return@withContext null
+        resolveStreamUrlBlocking(videoId, forceRefresh, preferHls)
+    }
+
+    /**
+     * Versión bloqueante usada directamente por `ResolvingDataSource` en el hilo Loader de ExoPlayer
+     * para transiciones sin cortes en segundo plano (sin salir nunca de Foreground ni entrar en STATE_ENDED).
+     */
+    fun resolveStreamUrlBlocking(
+        videoId: String,
+        forceRefresh: Boolean = false,
+        preferHls: Boolean = false,
+    ): ResolvedStream? {
+        if (!SecurityValidators.isValidVideoId(videoId)) return null
 
         val cacheKey = if (preferHls) "$videoId:hls" else videoId
         if (!forceRefresh) {
-            val cached = streamCache[cacheKey]
-            if (cached != null && (System.currentTimeMillis() - cached.fetchedAtMs) < STREAM_CACHE_TTL_MS) {
-                return@withContext cached
-            }
+            getCachedStream(videoId, preferHls)?.let { return it }
+        } else {
+            invalidateCachedStream(videoId)
         }
+        if (Thread.currentThread().isInterrupted) return null
 
         // 1. Cliente principal VISIONOS + visitorData fresco (devuelve Opus 251 completo sin 403 + HLS audio 234)
         val firstVd = getOrFetchVisitorData(forceRefresh = forceRefresh)
+        if (Thread.currentThread().isInterrupted) return null
         var resolved = fetchPlayerStream(videoId, useVisionOs = true, visitorData = firstVd, preferHls = preferHls)
 
         // Si falló con visitorData cacheado, renovar visitorData una vez y reintentar
-        if (resolved == null && !forceRefresh) {
+        if (resolved == null && !forceRefresh && !Thread.currentThread().isInterrupted) {
             val freshVd = getOrFetchVisitorData(forceRefresh = true)
-            if (freshVd != null && freshVd != firstVd) {
+            if (freshVd != null && freshVd != firstVd && !Thread.currentThread().isInterrupted) {
                 resolved = fetchPlayerStream(videoId, useVisionOs = true, visitorData = freshVd, preferHls = preferHls)
             }
         }
 
         // 2. Fallback secundario IOS (útil para algunos directos o pistas con HLS en iOS)
-        if (resolved == null) {
+        if (resolved == null && !Thread.currentThread().isInterrupted) {
             val vd = cachedVisitorData
             resolved = fetchPlayerStream(videoId, useVisionOs = false, visitorData = vd, preferHls = true)
         }
@@ -441,7 +466,7 @@ class YTMusicApi(private val authStore: AuthStore) {
             if (streamCache.size > 60) streamCache.clear()
             streamCache[cacheKey] = resolved
         }
-        resolved
+        return resolved
     }
 
     private fun fetchPlayerStream(
