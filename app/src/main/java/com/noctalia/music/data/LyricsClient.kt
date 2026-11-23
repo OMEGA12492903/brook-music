@@ -203,7 +203,9 @@ class LyricsClient {
         }
 
     private fun translateBatchToEs(batch: List<String>): Pair<String, List<String>>? {
-        val joined = batch.joinToString("\n")
+        // Etiquetar cada verso con su índice `[0] ...`, `[1] ...` para garantizar alineación 1:1
+        // aunque el traductor fusione o parta alguna línea.
+        val joined = batch.mapIndexed { idx, line -> "[$idx] $line" }.joinToString("\n")
         val url = HttpUrl.Builder()
             .scheme("https")
             .host("translate.googleapis.com")
@@ -232,9 +234,36 @@ class LyricsClient {
                     val piece = (pair.getOrNull(0) as? JsonPrimitive)?.contentOrNull ?: continue
                     sb.append(piece)
                 }
-                val splitLines = sb.toString().split("\n")
-                val aligned = List(batch.size) { idx ->
-                    splitLines.getOrNull(idx)?.trim().orEmpty()
+                val rawLines = sb.toString().lines()
+                val indexedMap = HashMap<Int, StringBuilder>(batch.size)
+                var lastIdx = -1
+                for (rawLine in rawLines) {
+                    val trimmed = rawLine.trim()
+                    if (trimmed.isEmpty()) continue
+                    val m = TRANSLATE_INDEX_RE.matchEntire(trimmed)
+                    if (m != null) {
+                        val idx = m.groupValues[1].toIntOrNull()
+                        val text = m.groupValues[2].trim()
+                        if (idx != null && idx in batch.indices) {
+                            lastIdx = idx
+                            val cur = indexedMap.getOrPut(idx) { StringBuilder() }
+                            if (cur.isNotEmpty()) cur.append(' ')
+                            cur.append(text)
+                            continue
+                        }
+                    }
+                    if (lastIdx in batch.indices) {
+                        val cur = indexedMap.getOrPut(lastIdx) { StringBuilder() }
+                        if (cur.isNotEmpty()) cur.append(' ')
+                        cur.append(trimmed)
+                    }
+                }
+                val aligned = if (indexedMap.isNotEmpty()) {
+                    List(batch.size) { idx -> indexedMap[idx]?.toString()?.trim().orEmpty() }
+                } else {
+                    List(batch.size) { idx ->
+                        rawLines.getOrNull(idx)?.replace(TRANSLATE_INDEX_PREFIX_RE, "")?.trim().orEmpty()
+                    }
                 }
                 detected to aligned
             }
@@ -349,6 +378,8 @@ class LyricsClient {
 
     companion object {
         private const val MAX_BYTES = 512L * 1024L
+        private val TRANSLATE_INDEX_RE = Regex("^\\[(\\d+)]\\s*(.*)$")
+        private val TRANSLATE_INDEX_PREFIX_RE = Regex("^\\[\\d+]\\s*")
     }
 }
 

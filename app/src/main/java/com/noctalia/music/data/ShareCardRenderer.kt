@@ -1,5 +1,6 @@
 package com.noctalia.music.data
 
+import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
@@ -7,6 +8,7 @@ import android.graphics.BitmapShader
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.LinearGradient
+import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Shader
@@ -15,6 +17,7 @@ import android.graphics.drawable.BitmapDrawable
 import android.text.Layout
 import android.text.StaticLayout
 import android.text.TextPaint
+import android.text.TextUtils
 import androidx.core.content.FileProvider
 import coil.imageLoader
 import coil.request.ImageRequest
@@ -68,7 +71,7 @@ object ShareCardRenderer {
     }
 
     private suspend fun loadCoverBitmap(context: Context, url: String): Bitmap? {
-        if (url.isBlank()) return null
+        if (url.isBlank() || !SecurityValidators.isSafeThumbUrl(url)) return null
         return try {
             val req = ImageRequest.Builder(context)
                 .data(url)
@@ -324,15 +327,25 @@ object ShareCardRenderer {
 
     private fun drawRoundedCover(canvas: Canvas, cover: Bitmap?, rect: RectF, radius: Float, accent: Int) {
         if (cover != null && cover.width > 0 && cover.height > 0) {
-            val scaled = Bitmap.createScaledBitmap(cover, rect.width().toInt(), rect.height().toInt(), true)
-            val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                shader = BitmapShader(scaled, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
+            // Recorte centrado (center-crop) mediante Matrix para no deformar portadas 16:9 o 4:3
+            val dstW = rect.width()
+            val dstH = rect.height()
+            val scale = maxOf(dstW / cover.width.toFloat(), dstH / cover.height.toFloat())
+            val dx = (dstW - cover.width * scale) * 0.5f
+            val dy = (dstH - cover.height * scale) * 0.5f
+            val shader = BitmapShader(cover, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP).apply {
+                setLocalMatrix(Matrix().apply {
+                    setScale(scale, scale)
+                    postTranslate(dx, dy)
+                })
+            }
+            val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
+                this.shader = shader
             }
             canvas.save()
             canvas.translate(rect.left, rect.top)
-            canvas.drawRoundRect(RectF(0f, 0f, rect.width(), rect.height()), radius, radius, paint)
+            canvas.drawRoundRect(RectF(0f, 0f, dstW, dstH), radius, radius, paint)
             canvas.restore()
-            if (scaled !== cover) scaled.recycle()
         } else {
             val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = accent }
             canvas.drawRoundRect(rect, radius, radius, p)
@@ -351,6 +364,7 @@ object ShareCardRenderer {
         val layout = StaticLayout.Builder.obtain(text, 0, text.length, paint, width.coerceAtLeast(60))
             .setAlignment(Layout.Alignment.ALIGN_NORMAL)
             .setMaxLines(maxLines)
+            .setEllipsize(TextUtils.TruncateAt.END)
             .build()
         canvas.save()
         canvas.translate(x, y)
@@ -379,6 +393,7 @@ object ShareCardRenderer {
             val sendIntent = Intent(Intent.ACTION_SEND).apply {
                 type = "image/png"
                 putExtra(Intent.EXTRA_STREAM, uri)
+                clipData = ClipData.newRawUri(chooserTitle, uri)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
             val chooser = Intent.createChooser(sendIntent, chooserTitle).apply {

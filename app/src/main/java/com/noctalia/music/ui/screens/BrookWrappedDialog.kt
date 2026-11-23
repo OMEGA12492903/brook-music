@@ -74,7 +74,7 @@ fun BrookWrappedDialog(
         library.stats.values.sortedByDescending { it.listenedSec * 2 + it.playCount * 30L }
     }
     val totalSec = remember(allStats) { allStats.sumOf { it.listenedSec } }
-    val totalMin = (totalSec / 60L).coerceAtLeast(1L)
+    val totalMin = if (totalSec > 0L) (totalSec / 60L).coerceAtLeast(1L) else 0L
     val totalPlays = remember(allStats) { allStats.sumOf { it.playCount } }
     val topArtists = remember(allStats) {
         allStats

@@ -170,7 +170,6 @@ fun YouTubeLoginDialog(
                         settings.userAgentString = settings.userAgentString.replace("; wv", "")
 
                         val cm = CookieManager.getInstance()
-                        cm.removeAllCookies(null)
                         cm.setAcceptCookie(true)
                         cm.setAcceptThirdPartyCookies(this, true)
 
@@ -205,7 +204,18 @@ fun YouTubeLoginDialog(
                             }
                         }
 
-                        loadUrl("https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fmusic.youtube.com%2F")
+                        // Esperar al borrado asíncrono de cookies ANTES de cargar Google Login
+                        cm.removeAllCookies {
+                            try {
+                                cm.flush()
+                            } catch (_: Exception) {
+                            }
+                            post {
+                                if (!captured && webViewRef === this) {
+                                    loadUrl("https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fmusic.youtube.com%2F")
+                                }
+                            }
+                        }
                     }
                 },
             )

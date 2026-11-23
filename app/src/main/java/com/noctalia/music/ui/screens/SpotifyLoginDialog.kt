@@ -52,6 +52,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.DialogWindowProvider
 import com.noctalia.music.data.AuthStore
 import com.noctalia.music.ui.theme.NoctaliaColors
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
@@ -62,18 +63,22 @@ private const val BRIDGE_NAME = "BrookSpBridge"
 
 /**
  * Puente público para WebView (`@JavascriptInterface` requiere clase y métodos públicos en Android/R8).
+ * Valida un `expectedNonce` aleatorio por sesión para impedir llamadas desde iframes o scripts ajenos.
  */
 class SpotifyTokenJsBridge(
+    private val expectedNonce: String,
     private val onTokenCaptured: (bearer: String?, clientToken: String?, verifiedUser: Boolean) -> Unit,
     private val onLoggedInDetected: (isLoggedIn: Boolean) -> Unit,
 ) {
     @JavascriptInterface
-    fun onToken(bearer: String?, clientToken: String?, verifiedUser: Boolean) {
+    fun onToken(nonce: String?, bearer: String?, clientToken: String?, verifiedUser: Boolean) {
+        if (nonce != expectedNonce) return
         onTokenCaptured(bearer, clientToken, verifiedUser)
     }
 
     @JavascriptInterface
-    fun onPageLoggedIn(isLoggedIn: Boolean) {
+    fun onPageLoggedIn(nonce: String?, isLoggedIn: Boolean) {
+        if (nonce != expectedNonce) return
         onLoggedInDetected(isLoggedIn)
     }
 }
@@ -175,16 +180,18 @@ private fun wipeSpotifyWebView(webView: WebView?) {
  * de contraseña o login SSO). Captura sin bloquear el Bearer autenticado y `client-token` emitidos
  * por el propio reproductor web oficial de Spotify (`/api/token`, `clienttoken.spotify.com`, fetch/XHR).
  */
-private const val SPOTIFY_CAPTURE_JS = """
+private fun buildSpotifyCaptureJs(nonce: String): String = """
 (function() {
+  if (window.top !== window) return;
   if (location.hostname !== 'open.spotify.com') return;
   if (window.__brookSpHooked) return;
   window.__brookSpHooked = true;
+  var __nonce = "$nonce";
 
   function notifyToken(bearer, clientToken, verifiedUser) {
     try {
       if (window.BrookSpBridge && typeof window.BrookSpBridge.onToken === 'function') {
-        window.BrookSpBridge.onToken(bearer || '', clientToken || '', !!verifiedUser);
+        window.BrookSpBridge.onToken(__nonce, bearer || '', clientToken || '', !!verifiedUser);
       }
     } catch (e) {}
   }
@@ -192,7 +199,7 @@ private const val SPOTIFY_CAPTURE_JS = """
   function notifyLoggedIn(flag) {
     try {
       if (window.BrookSpBridge && typeof window.BrookSpBridge.onPageLoggedIn === 'function') {
-        window.BrookSpBridge.onPageLoggedIn(!!flag);
+        window.BrookSpBridge.onPageLoggedIn(__nonce, !!flag);
       }
     } catch (e) {}
   }
@@ -382,6 +389,8 @@ fun SpotifyLoginDialog(
     onLoginSuccess: (bearerToken: String, clientToken: String?) -> Unit,
 ) {
     val captured = remember { AtomicBoolean(false) }
+    val bridgeNonce = remember { UUID.randomUUID().toString() }
+    val captureJs = remember(bridgeNonce) { buildSpotifyCaptureJs(bridgeNonce) }
     val pendingBearer = remember { AtomicReference<String?>(null) }
     val pendingClient = remember { AtomicReference<String?>(null) }
     val pageLoggedIn = remember { AtomicBoolean(false) }
@@ -575,7 +584,6 @@ fun SpotifyLoginDialog(
                         webViewRef = this
                         settings.javaScriptEnabled = true
                         settings.domStorageEnabled = true
-                        settings.databaseEnabled = true
                         settings.allowFileAccess = false
                         settings.allowContentAccess = false
                         settings.setGeolocationEnabled(false)
@@ -587,6 +595,7 @@ fun SpotifyLoginDialog(
                         settings.userAgentString = settings.userAgentString.replace("; wv", "")
 
                         val bridge = SpotifyTokenJsBridge(
+                            expectedNonce = bridgeNonce,
                             onTokenCaptured = { bearer, clientToken, verifiedUser ->
                                 post {
                                     if (captured.get()) return@post
@@ -616,32 +625,33 @@ fun SpotifyLoginDialog(
                             ): Boolean {
                                 val parent = view ?: return false
                                 val transport = resultMsg?.obj as? WebView.WebViewTransport ?: return false
+                                val handled = AtomicBoolean(false)
+                                fun redirectAndDestroy(v: WebView?, targetUrl: String?) {
+                                    if (!handled.compareAndSet(false, true)) return
+                                    val uri = targetUrl?.let { Uri.parse(it) }
+                                    if (uri != null &&
+                                        uri.scheme.equals("https", ignoreCase = true) &&
+                                        isAllowedSpotifyLoginHost(uri.host)
+                                    ) {
+                                        parent.post { parent.loadUrl(uri.toString()) }
+                                    }
+                                    v?.post {
+                                        try {
+                                            v.stopLoading()
+                                            v.destroy()
+                                        } catch (_: Exception) {
+                                        }
+                                    }
+                                }
                                 val popup = WebView(parent.context).apply {
                                     settings.javaScriptEnabled = true
                                     settings.domStorageEnabled = true
                                     settings.allowFileAccess = false
                                     settings.allowContentAccess = false
+                                    settings.setGeolocationEnabled(false)
+                                    settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
                                     settings.userAgentString = parent.settings.userAgentString
                                     webViewClient = object : WebViewClient() {
-                                        private val handled = AtomicBoolean(false)
-                                        private fun redirectAndDestroy(v: WebView?, targetUrl: String?) {
-                                            if (!handled.compareAndSet(false, true)) return
-                                            val uri = targetUrl?.let { Uri.parse(it) }
-                                            if (uri != null &&
-                                                uri.scheme.equals("https", ignoreCase = true) &&
-                                                isAllowedSpotifyLoginHost(uri.host)
-                                            ) {
-                                                parent.post { parent.loadUrl(uri.toString()) }
-                                            }
-                                            v?.post {
-                                                try {
-                                                    v.stopLoading()
-                                                    v.destroy()
-                                                } catch (_: Exception) {
-                                                }
-                                            }
-                                        }
-
                                         override fun shouldOverrideUrlLoading(
                                             v: WebView?,
                                             req: WebResourceRequest?,
@@ -655,6 +665,8 @@ fun SpotifyLoginDialog(
                                         }
                                     }
                                 }
+                                // Autodestruir el popup tras 15 s si nunca llegó a navegar para evitar fugas de memoria
+                                popup.postDelayed({ redirectAndDestroy(popup, null) }, 15_000L)
                                 transport.webView = popup
                                 resultMsg.sendToTarget()
                                 return true
@@ -687,7 +699,7 @@ fun SpotifyLoginDialog(
                                         CookieManager.getInstance().flush()
                                     } catch (_: Exception) {
                                     }
-                                    view?.evaluateJavascript(SPOTIFY_CAPTURE_JS, null)
+                                    view?.evaluateJavascript(captureJs, null)
                                 }
                             }
 
@@ -702,7 +714,7 @@ fun SpotifyLoginDialog(
                                     CookieManager.getInstance().flush()
                                 } catch (_: Exception) {
                                 }
-                                view?.evaluateJavascript(SPOTIFY_CAPTURE_JS, null)
+                                view?.evaluateJavascript(captureJs, null)
 
                                 val hasSession = pageLoggedIn.get() || hasSpotifySessionCookie()
                                 if (hasSession) {

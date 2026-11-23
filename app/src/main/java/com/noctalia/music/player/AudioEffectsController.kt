@@ -65,6 +65,18 @@ class AudioEffectsController(
 
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
     private val mainHandler = Handler(Looper.getMainLooper())
+    @Volatile
+    private var pendingProfilePersist: Boolean = false
+    @Volatile
+    private var pendingCrossfadePersist: Boolean = false
+    private val persistProfileRunnable = Runnable {
+        pendingProfilePersist = false
+        persistActiveProfileIfEnabled()
+    }
+    private val persistCrossfadeRunnable = Runnable {
+        pendingCrossfadePersist = false
+        library.updateCrossfadeSec(_state.value.crossfadeSec)
+    }
 
     private val _state = MutableStateFlow(
         run {
@@ -252,6 +264,32 @@ class AudioEffectsController(
         applyAll()
     }
 
+    private fun scheduleProfilePersist() {
+        if (!_state.value.perDeviceProfilesEnabled) return
+        pendingProfilePersist = true
+        mainHandler.removeCallbacks(persistProfileRunnable)
+        mainHandler.postDelayed(persistProfileRunnable, PERSIST_DEBOUNCE_MS)
+    }
+
+    private fun scheduleCrossfadePersist() {
+        pendingCrossfadePersist = true
+        mainHandler.removeCallbacks(persistCrossfadeRunnable)
+        mainHandler.postDelayed(persistCrossfadeRunnable, PERSIST_DEBOUNCE_MS)
+    }
+
+    private fun flushPendingPersists() {
+        mainHandler.removeCallbacks(persistProfileRunnable)
+        mainHandler.removeCallbacks(persistCrossfadeRunnable)
+        if (pendingProfilePersist) {
+            pendingProfilePersist = false
+            persistActiveProfileIfEnabled()
+        }
+        if (pendingCrossfadePersist) {
+            pendingCrossfadePersist = false
+            library.updateCrossfadeSec(_state.value.crossfadeSec)
+        }
+    }
+
     fun setPreset(preset: EqPreset) {
         val st = _state.value
         val nextBands = if (preset == EqPreset.CUSTOM) {
@@ -261,6 +299,8 @@ class AudioEffectsController(
         }
         _state.update { it.copy(preset = preset, bandLevelsMb = nextBands) }
         applyAll()
+        mainHandler.removeCallbacks(persistProfileRunnable)
+        pendingProfilePersist = false
         persistActiveProfileIfEnabled()
     }
 
@@ -271,7 +311,7 @@ class AudioEffectsController(
         val nextBands = st.bandLevelsMb.toMutableList().apply { this[bandIndex] = clamped }
         _state.update { it.copy(preset = EqPreset.CUSTOM, bandLevelsMb = nextBands) }
         applyAll()
-        persistActiveProfileIfEnabled()
+        scheduleProfilePersist()
     }
 
     fun resetEqualizerBands() {
@@ -279,6 +319,8 @@ class AudioEffectsController(
         val zeros = List(st.bandLevelsMb.size.coerceAtLeast(5)) { 0 }
         _state.update { it.copy(preset = EqPreset.FLAT, bandLevelsMb = zeros, bassBoostStrength = 0) }
         applyAll()
+        mainHandler.removeCallbacks(persistProfileRunnable)
+        pendingProfilePersist = false
         persistActiveProfileIfEnabled()
     }
 
@@ -286,12 +328,14 @@ class AudioEffectsController(
         val clamped = strength.coerceIn(0, 1000)
         _state.update { it.copy(bassBoostStrength = clamped) }
         applyAll()
-        persistActiveProfileIfEnabled()
+        scheduleProfilePersist()
     }
 
     fun setNormalizeVolume(enabled: Boolean) {
         _state.update { it.copy(normalizeVolume = enabled) }
         applyAll()
+        mainHandler.removeCallbacks(persistProfileRunnable)
+        pendingProfilePersist = false
         persistActiveProfileIfEnabled()
     }
 
@@ -306,8 +350,8 @@ class AudioEffectsController(
 
     fun setCrossfadeSec(sec: Int) {
         val clamped = sec.coerceIn(0, 10)
-        library.updateCrossfadeSec(clamped)
         _state.update { it.copy(crossfadeSec = clamped) }
+        scheduleCrossfadePersist()
     }
 
     fun setSponsorBlock(enabled: Boolean) {
@@ -374,6 +418,7 @@ class AudioEffectsController(
 
     @Synchronized
     fun release() {
+        flushPendingPersists()
         try { equalizer?.release() } catch (_: Exception) {}
         try { bassBoost?.release() } catch (_: Exception) {}
         try { loudness?.release() } catch (_: Exception) {}
@@ -382,5 +427,9 @@ class AudioEffectsController(
         loudness = null
         currentSessionId = 0
         _state.update { it.copy(attached = false) }
+    }
+
+    companion object {
+        private const val PERSIST_DEBOUNCE_MS = 400L
     }
 }

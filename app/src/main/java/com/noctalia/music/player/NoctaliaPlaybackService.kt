@@ -41,7 +41,6 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import java.io.File
 import java.io.IOException
-import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Señal interna lanzada por `ResolvingDataSource` cuando YouTube solo ofrece HLS para una pista,
@@ -76,7 +75,37 @@ class NoctaliaPlaybackService : MediaLibraryService() {
     private var activeDeck: ExoPlayer? = null
     private var secondaryDeck: ExoPlayer? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private val androidAutoSearchCache = ConcurrentHashMap<String, List<Track>>()
+    private val searchCacheLock = Any()
+    private val androidAutoSearchCache = object : LinkedHashMap<String, List<Track>>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, List<Track>>?): Boolean {
+            return size > MAX_AA_SEARCH_CACHE
+        }
+    }
+
+    private fun putSearchCache(query: String, tracks: List<Track>) {
+        synchronized(searchCacheLock) {
+            androidAutoSearchCache[query] = tracks
+        }
+    }
+
+    private fun getSearchCache(query: String): List<Track> {
+        synchronized(searchCacheLock) {
+            return androidAutoSearchCache[query].orEmpty()
+        }
+    }
+
+    private fun allSearchCachedTracks(): List<Track> {
+        synchronized(searchCacheLock) {
+            return androidAutoSearchCache.values.flatten()
+        }
+    }
+
+    private fun isTrustedController(controller: MediaSession.ControllerInfo): Boolean {
+        val pkg = controller.packageName
+        if (pkg == packageName) return true
+        if (controller.isTrusted) return true
+        return pkg in ALLOWED_EXTERNAL_MEDIA_PACKAGES
+    }
 
     @OptIn(UnstableApi::class)
     private fun createDeck(
@@ -241,12 +270,16 @@ class NoctaliaPlaybackService : MediaLibraryService() {
                 if (controller.packageName == packageName) {
                     return super.onConnect(session, controller)
                 }
-                // Android Auto, SystemUI, Bluetooth, Wear OS: controles seguros + catálogo Brook
+                if (!isTrustedController(controller)) {
+                    return MediaSession.ConnectionResult.reject()
+                }
+                // Solo Android Auto, SystemUI, Bluetooth, Wear OS y Asistente: controles seguros + catálogo Brook
                 val externalPlayerCommands = Player.Commands.Builder()
                     .add(Player.COMMAND_PLAY_PAUSE)
                     .add(Player.COMMAND_STOP)
                     .add(Player.COMMAND_PREPARE)
                     .add(Player.COMMAND_SET_MEDIA_ITEM)
+                    .add(Player.COMMAND_CHANGE_MEDIA_ITEMS)
                     .add(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)
                     .add(Player.COMMAND_SEEK_TO_NEXT)
                     .add(Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
@@ -270,6 +303,9 @@ class NoctaliaPlaybackService : MediaLibraryService() {
                 browser: MediaSession.ControllerInfo,
                 params: LibraryParams?,
             ): ListenableFuture<LibraryResult<MediaItem>> {
+                if (!isTrustedController(browser)) {
+                    return Futures.immediateFuture(LibraryResult.ofError(LibraryResult.RESULT_ERROR_PERMISSION_DENIED))
+                }
                 val rootItem = buildBrowsableItem(AA_ROOT, "Brook Music", MediaMetadata.MEDIA_TYPE_FOLDER_MIXED)
                 return Futures.immediateFuture(LibraryResult.ofItem(rootItem, params))
             }
@@ -282,6 +318,9 @@ class NoctaliaPlaybackService : MediaLibraryService() {
                 pageSize: Int,
                 params: LibraryParams?,
             ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
+                if (!isTrustedController(browser)) {
+                    return Futures.immediateFuture(LibraryResult.ofError(LibraryResult.RESULT_ERROR_PERMISSION_DENIED))
+                }
                 val lib = app.library.state.value
                 val items: List<MediaItem> = when {
                     parentId == AA_ROOT -> listOf(
@@ -320,6 +359,9 @@ class NoctaliaPlaybackService : MediaLibraryService() {
                 browser: MediaSession.ControllerInfo,
                 mediaId: String,
             ): ListenableFuture<LibraryResult<MediaItem>> {
+                if (!isTrustedController(browser)) {
+                    return Futures.immediateFuture(LibraryResult.ofError(LibraryResult.RESULT_ERROR_PERMISSION_DENIED))
+                }
                 val track = resolveAndroidAutoTrack(mediaId)
                 return if (track != null) {
                     Futures.immediateFuture(LibraryResult.ofItem(buildAndroidAutoPlayableItem(mediaId, track), null))
@@ -334,11 +376,14 @@ class NoctaliaPlaybackService : MediaLibraryService() {
                 query: String,
                 params: LibraryParams?,
             ): ListenableFuture<LibraryResult<Void>> {
+                if (!isTrustedController(browser)) {
+                    return Futures.immediateFuture(LibraryResult.ofError(LibraryResult.RESULT_ERROR_PERMISSION_DENIED))
+                }
                 val future = SettableFuture.create<LibraryResult<Void>>()
                 val cleanQ = query.trim().take(120)
                 serviceScope.launch {
                     val found = if (cleanQ.isNotEmpty()) app.api.search(cleanQ, limit = 15, mode = "songs") else emptyList()
-                    androidAutoSearchCache[cleanQ] = found
+                    if (cleanQ.isNotEmpty()) putSearchCache(cleanQ, found)
                     session.notifySearchResultChanged(browser, query, found.size, params)
                     future.set(LibraryResult.ofVoid(params))
                 }
@@ -353,9 +398,50 @@ class NoctaliaPlaybackService : MediaLibraryService() {
                 pageSize: Int,
                 params: LibraryParams?,
             ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
-                val list = androidAutoSearchCache[query.trim().take(120)].orEmpty()
+                if (!isTrustedController(browser)) {
+                    return Futures.immediateFuture(LibraryResult.ofError(LibraryResult.RESULT_ERROR_PERMISSION_DENIED))
+                }
+                val list = getSearchCache(query.trim().take(120))
                 val items = list.map { buildAndroidAutoPlayableItem("aa_sr:${it.id}", it) }
-                return Futures.immediateFuture(LibraryResult.ofItemList(ImmutableList.copyOf(items), params))
+                val safePage = page.coerceAtLeast(0)
+                val safeSize = pageSize.coerceIn(1, 100)
+                val from = (safePage * safeSize).coerceAtMost(items.size)
+                val to = (from + safeSize).coerceAtMost(items.size)
+                return Futures.immediateFuture(
+                    LibraryResult.ofItemList(ImmutableList.copyOf(items.subList(from, to)), params)
+                )
+            }
+
+            @OptIn(UnstableApi::class)
+            override fun onSetMediaItems(
+                mediaSession: MediaSession,
+                controller: MediaSession.ControllerInfo,
+                mediaItems: MutableList<MediaItem>,
+                startIndex: Int,
+                startPositionMs: Long,
+            ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
+                if (controller.packageName == packageName) {
+                    return super.onSetMediaItems(mediaSession, controller, mediaItems, startIndex, startPositionMs)
+                }
+                if (!isTrustedController(controller)) {
+                    return Futures.immediateFailedFuture(SecurityException("Untrusted media controller"))
+                }
+                // Android Auto / asistente de voz: resolver IDs internos de Brook y devolver MediaItem válido
+                // para que Media3 lo aplique sobre el player sin borrar la reproducción.
+                val pickedIdx = startIndex.coerceAtLeast(0).takeIf { it < mediaItems.size } ?: 0
+                val firstId = mediaItems.getOrNull(pickedIdx)?.mediaId
+                val resolvedItem = if (!firstId.isNullOrBlank()) {
+                    app.playerController.prepareFromAndroidAuto(firstId, allSearchCachedTracks())
+                } else {
+                    null
+                }
+                return if (resolvedItem != null) {
+                    Futures.immediateFuture(
+                        MediaSession.MediaItemsWithStartPosition(listOf(resolvedItem), 0, 0L)
+                    )
+                } else {
+                    Futures.immediateFailedFuture(UnsupportedOperationException("Unknown Brook mediaId"))
+                }
             }
 
             override fun onAddMediaItems(
@@ -364,15 +450,16 @@ class NoctaliaPlaybackService : MediaLibraryService() {
                 mediaItems: MutableList<MediaItem>,
             ): ListenableFuture<MutableList<MediaItem>> {
                 if (controller.packageName != packageName) {
-                    // Android Auto / asistente de voz: resolver solo IDs internos de Brook (0 URLs externas arbitrarias)
-                    val firstId = mediaItems.firstOrNull()?.mediaId
-                    if (!firstId.isNullOrBlank()) {
-                        serviceScope.launch {
-                            val searchPool = androidAutoSearchCache.values.flatten()
-                            app.playerController.playFromAndroidAuto(firstId, searchPool)
-                        }
+                    if (!isTrustedController(controller)) {
+                        return Futures.immediateFuture(mutableListOf())
                     }
-                    return Futures.immediateFuture(mutableListOf())
+                    // Resolver únicamente IDs del catálogo interno de Brook (nunca URLs arbitrarias externas)
+                    val resolved = mediaItems.mapNotNull { item ->
+                        resolveAndroidAutoTrack(item.mediaId)?.let { track ->
+                            app.playerController.buildMediaItemForTrack(track)
+                        }
+                    }.toMutableList()
+                    return Futures.immediateFuture(resolved)
                 }
                 val offlineRoot = File(filesDir, "offline_audio").canonicalPath
                 val safeItems = mediaItems.mapNotNull { item ->
@@ -416,6 +503,19 @@ class NoctaliaPlaybackService : MediaLibraryService() {
                 if (oldActive !== newActive) {
                     secondaryDeck = oldActive
                     activeDeck = newActive
+                    // Transferir AudioFocus y pausa al desconectar auriculares (becoming noisy) al nuevo deck activo
+                    oldActive?.let { prev ->
+                        try {
+                            prev.setHandleAudioBecomingNoisy(false)
+                            prev.setAudioAttributes(audioAttrs, false)
+                        } catch (_: Throwable) {
+                        }
+                    }
+                    try {
+                        newActive.setAudioAttributes(audioAttrs, true)
+                        newActive.setHandleAudioBecomingNoisy(true)
+                    } catch (_: Throwable) {
+                    }
                     try {
                         mediaLibrarySession?.player = wrapDeckForSession(newActive)
                     } catch (_: Throwable) {
@@ -473,7 +573,7 @@ class NoctaliaPlaybackService : MediaLibraryService() {
             mediaId.startsWith("aa_loc:") -> app.localAudio.findById(mediaId.removePrefix("aa_loc:"))
             mediaId.startsWith("aa_sr:") -> {
                 val tid = mediaId.removePrefix("aa_sr:")
-                androidAutoSearchCache.values.flatten().firstOrNull { it.id == tid }
+                allSearchCachedTracks().firstOrNull { it.id == tid }
             }
             else -> null
         }
@@ -525,6 +625,20 @@ class NoctaliaPlaybackService : MediaLibraryService() {
         private const val AA_CAT_PLAYLISTS = "CAT_PLAYLISTS"
         private const val AA_CAT_LOCAL = "CAT_LOCAL"
         private const val AA_CAT_PL_PREFIX = "CAT_PL:"
+        private const val MAX_AA_SEARCH_CACHE = 10
+
+        private val ALLOWED_EXTERNAL_MEDIA_PACKAGES = setOf(
+            "com.google.android.projection.gearhead",
+            "com.android.systemui",
+            "com.google.android.googlequicksearchbox",
+            "com.android.bluetooth",
+            "com.google.android.bluetooth",
+            "com.google.android.wearable.app",
+            "com.samsung.android.app.watchmanager",
+            "com.android.car.media",
+            "com.google.android.carassistant",
+            "com.google.android.apps.automotive.templates.host",
+        )
 
         fun buildBrookTrackUri(videoId: String): Uri =
             Uri.parse("$BROOK_TRACK_SCHEME://$BROOK_TRACK_HOST/$videoId")

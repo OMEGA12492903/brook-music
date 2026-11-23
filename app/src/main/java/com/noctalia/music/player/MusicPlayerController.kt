@@ -300,6 +300,7 @@ class MusicPlayerController(
                     syncNextMediaItemInPlayer(alsoPrefetch = true)
                 }
                 Player.STATE_ENDED -> {
+                    if (isCrossfading) return
                     if (_state.value.sleepEndOfTrack) {
                         isTransitioningNext = false
                         releaseTransitionWakeLock()
@@ -604,7 +605,7 @@ class MusicPlayerController(
         return null
     }
 
-    private fun buildMediaItemForTrack(
+    internal fun buildMediaItemForTrack(
         track: Track,
         explicitUri: Uri? = null,
         isHls: Boolean = false,
@@ -825,7 +826,11 @@ class MusicPlayerController(
         }
     }
 
-    private fun commitTrackMetadataChange(nextTrack: Track, updatedQueue: List<Track>? = null) {
+    private fun commitTrackMetadataChange(
+        nextTrack: Track,
+        updatedQueue: List<Track>? = null,
+        initialPositionMs: Long = 0L,
+    ) {
         library.recordRecent(nextTrack)
         retriedCurrent = false
         countedPlayForTrackId = null
@@ -847,6 +852,7 @@ class MusicPlayerController(
         }
         val p = activePlayer()
         val dur = p?.duration?.takeIf { it > 0 } ?: (nextTrack.duration * 1000L)
+        val safePos = initialPositionMs.coerceAtLeast(0L)
 
         _state.update { cur ->
             val finalQueue = updatedQueue ?: cur.queue
@@ -857,7 +863,7 @@ class MusicPlayerController(
                 queue = finalQueue,
                 manualQueueCount = clampedManual,
                 isLoading = p?.playbackState == Player.STATE_BUFFERING,
-                positionMs = 0L,
+                positionMs = safePos,
                 durationMs = dur,
                 qualityLabel = quality,
                 lyrics = LyricsResult(),
@@ -869,7 +875,7 @@ class MusicPlayerController(
                 errorMsg = null,
             )
         }
-        library.savePlaybackSnapshot(nextTrack, 0L, _state.value.queue)
+        library.savePlaybackSnapshot(nextTrack, safePos, _state.value.queue)
         lastSnapshotSavedMs = System.currentTimeMillis()
         BrookWidgetProvider.updateAllWidgets(context)
         launchMetadataJobsFor(nextTrack)
@@ -1237,6 +1243,16 @@ class MusicPlayerController(
                         abortCrossfade(outgoing, incoming)
                         return@launch
                     }
+                    // Si la pista saliente terminó de forma natural justo antes del último paso,
+                    // completar el intercambio limpiamente sin cortar ni reiniciar la pista entrante.
+                    val outState = outgoing.playbackState
+                    if (outState == Player.STATE_ENDED || outState == Player.STATE_IDLE) {
+                        break
+                    }
+                    if (!outgoing.playWhenReady) {
+                        abortCrossfade(outgoing, incoming)
+                        return@launch
+                    }
                     val t = i.toFloat() / steps.toFloat()
                     val angle = t * (PI / 2.0)
                     outgoing.volume = cos(angle).toFloat().coerceIn(0f, 1f)
@@ -1254,6 +1270,7 @@ class MusicPlayerController(
                 }
 
                 incoming.volume = 1f
+                val incomingPosMs = incoming.currentPosition.coerceAtLeast(0L)
                 servicePlayer = incoming
                 standbyPlayer = outgoing
                 incoming.addListener(playerListener)
@@ -1283,7 +1300,11 @@ class MusicPlayerController(
                 isTransitioningNext = false
                 releaseTransitionWakeLock()
 
-                commitTrackMetadataChange(incomingTrack, updatedQueue)
+                commitTrackMetadataChange(
+                    nextTrack = incomingTrack,
+                    updatedQueue = updatedQueue,
+                    initialPositionMs = incomingPosMs,
+                )
                 if (_state.value.shuffle && _state.value.autoRadio && manualQueueCount == 0) {
                     onShuffleTrackAdvanced(incomingTrack)
                 }
@@ -1312,6 +1333,68 @@ class MusicPlayerController(
         } catch (_: Throwable) {
         }
         syncNextMediaItemInPlayer(alsoPrefetch = false)
+    }
+
+    /**
+     * Prepara estado, cola y metadatos para una pista seleccionada desde Android Auto / MediaLibraryService
+     * devolviendo el `MediaItem` interno de Brook (`brook-track://`) para que Media3 lo aplique directamente
+     * sobre el player activo en `onSetMediaItems` sin sobrescribir la reproducción con una lista vacía.
+     */
+    fun prepareFromAndroidAuto(mediaId: String, searchPool: List<Track> = emptyList()): MediaItem? {
+        val lib = library.state.value
+        var selectedRaw: Track? = null
+        var restRaw: List<Track>? = null
+
+        fun pickFromList(list: List<Track>, targetId: String) {
+            val cleanList = list.mapNotNull { SecurityValidators.sanitizeTrack(it) }
+            val idx = cleanList.indexOfFirst { it.id == targetId }
+            if (idx >= 0) {
+                selectedRaw = cleanList[idx]
+                restRaw = cleanList.drop(idx + 1) + cleanList.take(idx)
+            }
+        }
+
+        when {
+            mediaId.startsWith("aa_fav:") -> pickFromList(lib.favorites, mediaId.removePrefix("aa_fav:"))
+            mediaId.startsWith("aa_rec:") -> pickFromList(lib.recent, mediaId.removePrefix("aa_rec:"))
+            mediaId.startsWith("aa_pl:") -> {
+                val payload = mediaId.removePrefix("aa_pl:")
+                val plName = payload.substringBefore("|")
+                val tid = payload.substringAfter("|", "")
+                pickFromList(lib.playlists[plName].orEmpty(), tid)
+            }
+            mediaId.startsWith("aa_loc:") -> pickFromList(localAudio.state.value.tracks, mediaId.removePrefix("aa_loc:"))
+            mediaId.startsWith("aa_sr:") -> {
+                val tid = mediaId.removePrefix("aa_sr:")
+                selectedRaw = searchPool.firstOrNull { it.id == tid }?.let { SecurityValidators.sanitizeTrack(it) }
+            }
+        }
+
+        val clean = selectedRaw ?: return null
+        cancelActiveCrossfade()
+        playJob?.cancel()
+        radioJob?.cancel()
+        resetSmartShufflePool()
+        pendingPlayRadioWhenReady = false
+        isTransitioningNext = false
+        releaseTransitionWakeLock()
+
+        val prev = _state.value.currentTrack
+        if (prev != null && prev.id != clean.id) {
+            history.addLast(prev)
+            while (history.size > 50) history.removeFirst()
+        }
+        if (restRaw != null) {
+            manualQueueCount = 0
+        }
+
+        commitTrackMetadataChange(clean, updatedQueue = restRaw, initialPositionMs = 0L)
+        _state.update { it.copy(isLoading = true, isPlaying = true, errorMsg = null) }
+
+        if (_state.value.autoRadio && _state.value.queue.isEmpty()) {
+            prefetchRadio(clean.id, playImmediately = false)
+        }
+        return buildMediaItemForTrack(clean)
     }
 
     /**

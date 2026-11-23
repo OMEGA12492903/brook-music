@@ -145,27 +145,37 @@ class RecommendationEngine(
             .take(12)
             .map { (key, score) -> (artistDisplayNames[key] ?: key) to score }
 
-        // Seleccionar hasta 6 semillas diversas (máx. 1 pista por artista, evitando las saltadas)
+        // Seleccionar hasta 6 semillas diversas de YouTube Music (máx. 1 pista por artista, evitando saltadas y archivos locales)
         val seedCandidates = mutableListOf<Pair<Track, Float>>()
-        payload.recent.take(6).forEachIndexed { idx, t ->
-            if (t.id !in skippedIds) seedCandidates.add(t to (34f - idx * 3f))
+        payload.recent.take(10).forEachIndexed { idx, t ->
+            if (SecurityValidators.isValidVideoId(t.id) && t.id !in skippedIds) {
+                seedCandidates.add(t to (34f - idx * 3f))
+            }
         }
         payload.stats.values
-            .filter { it.track.id !in skippedIds }
+            .filter { SecurityValidators.isValidVideoId(it.track.id) && it.track.id !in skippedIds }
             .sortedByDescending { it.listenedSec * 2 + it.playCount * 30L + it.completeCount * 60L }
             .take(10)
             .forEachIndexed { idx, st ->
                 seedCandidates.add(st.track to (32f - idx * 2f))
             }
-        payload.favorites.take(8).forEachIndexed { idx, t ->
-            seedCandidates.add(t to (26f - idx * 1.5f))
-        }
+        payload.favorites
+            .filter { SecurityValidators.isValidVideoId(it.id) }
+            .take(8)
+            .forEachIndexed { idx, t ->
+                seedCandidates.add(t to (26f - idx * 1.5f))
+            }
         accountHistorySeeds.take(10).forEachIndexed { idx, t ->
-            if (t.id !in skippedIds) seedCandidates.add(t to (22f - idx * 1.2f))
+            if (SecurityValidators.isValidVideoId(t.id) && t.id !in skippedIds) {
+                seedCandidates.add(t to (22f - idx * 1.2f))
+            }
         }
-        payload.playlists.values.flatten().take(12).forEach { t ->
-            if (t.id !in skippedIds) seedCandidates.add(t to 16f)
-        }
+        payload.playlists.values.flatten()
+            .filter { SecurityValidators.isValidVideoId(it.id) && it.id !in skippedIds }
+            .take(12)
+            .forEach { t ->
+                seedCandidates.add(t to 16f)
+            }
 
         val topSeeds = mutableListOf<Track>()
         val usedSeedArtists = HashSet<String>()
@@ -345,13 +355,16 @@ class RecommendationEngine(
         for ((displayName, _) in profile.topArtists) {
             val key = normalizeArtistKey(displayName)
             if (key.isEmpty() || !usedKeys.add(key)) continue
-            val seed = allKnownTracks.firstOrNull { normalizeArtistKey(it.artist) == key } ?: continue
+            val ytSeed = allKnownTracks.firstOrNull {
+                SecurityValidators.isValidVideoId(it.id) && normalizeArtistKey(it.artist) == key
+            }
+            val anySeed = ytSeed ?: allKnownTracks.firstOrNull { normalizeArtistKey(it.artist) == key } ?: continue
             out.add(
                 ArtistMixCard(
                     artistName = displayName,
                     subtitle = "Con $displayName y similares",
-                    coverUrl = seed.thumb,
-                    seedTrackId = seed.id,
+                    coverUrl = anySeed.thumb,
+                    seedTrackId = ytSeed?.id.orEmpty(),
                 )
             )
             if (out.size >= 4) break
@@ -365,10 +378,17 @@ class RecommendationEngine(
      */
     suspend fun buildArtistMix(card: ArtistMixCard): List<Track> = withContext(Dispatchers.IO) {
         val profile = buildTasteProfile()
-        val (radioTracks, artistHits) = coroutineScope {
-            val rDef = async { api.getRadio(card.seedTrackId, limit = 24) }
+        val hasYtSeed = SecurityValidators.isValidVideoId(card.seedTrackId)
+        val (initialRadio, artistHits) = coroutineScope {
+            val rDef = if (hasYtSeed) async { api.getRadio(card.seedTrackId, limit = 24) } else null
             val aDef = async { api.search(card.artistName, limit = 10, mode = "artist") }
-            rDef.await() to aDef.await()
+            (rDef?.await().orEmpty()) to aDef.await()
+        }
+        val radioTracks = if (initialRadio.isNotEmpty()) {
+            initialRadio
+        } else {
+            val fallbackSeedId = artistHits.firstOrNull { SecurityValidators.isValidVideoId(it.id) }?.id
+            if (fallbackSeedId != null) api.getRadio(fallbackSeedId, limit = 24) else emptyList()
         }
         val combined = LinkedHashMap<String, Track>()
         artistHits.take(4).forEach { if (it.id !in profile.skippedTrackIds) combined[it.id] = it }
@@ -392,15 +412,22 @@ class RecommendationEngine(
         val profile = buildTasteProfile()
         val curArtistKey = normalizeArtistKey(currentTrack.artist)
 
-        // Buscar una segunda semilla reciente de un cantante distinto (que no se haya saltado) para captar el "mood"
+        // Buscar una segunda semilla reciente de YouTube Music de un cantante distinto (que no se haya saltado)
         val secondarySeed = recentSessionTracks.asReversed().firstOrNull { t ->
-            t.id != currentTrack.id &&
+            SecurityValidators.isValidVideoId(t.id) &&
+                t.id != currentTrack.id &&
                 t.id !in profile.skippedTrackIds &&
                 normalizeArtistKey(t.artist) != curArtistKey
         }
 
         val (primaryRadio, secondaryRadio) = coroutineScope {
-            val pDef = async { api.getRadio(currentTrack.id, limit = 24) }
+            val pDef = async {
+                if (SecurityValidators.isValidVideoId(currentTrack.id)) {
+                    api.getRadio(currentTrack.id, limit = 24)
+                } else {
+                    api.search("${currentTrack.title} ${currentTrack.artist}", limit = 16, mode = "songs")
+                }
+            }
             val sDef = if (secondarySeed != null) {
                 async { api.getRadio(secondarySeed.id, limit = 16) }
             } else {

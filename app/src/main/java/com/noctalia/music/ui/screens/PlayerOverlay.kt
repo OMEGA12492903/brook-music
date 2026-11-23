@@ -403,8 +403,9 @@ fun FullPlayerOverlay(
     // null = reproductor principal | "lyrics" | "queue" | "audio" | "timer"
     var activeSheet by remember { mutableStateOf<String?>(null) }
 
-    val isCached = track.id in offline.cachedIds
-    val isDownloading = track.id in offline.downloadingIds
+    val isLocalTrack = SecurityValidators.isLocalTrackId(track.id)
+    val isCached = isLocalTrack || track.id in offline.cachedIds
+    val isDownloading = !isLocalTrack && track.id in offline.downloadingIds
 
     // Gesto interactivo de deslizar hacia abajo para bajar/minimizar el reproductor
     var dragDownRaw by remember { mutableFloatStateOf(0f) }

@@ -366,12 +366,19 @@ class NoctaliaViewModel : ViewModel() {
             showMessage("Escucha algunas canciones primero para generar tu Wrapped.")
             return
         }
-        val totalMin = (stats.sumOf { it.listenedSec } / 60L).coerceAtLeast(1L)
+        val totalSec = stats.sumOf { it.listenedSec }
+        val totalMin = if (totalSec > 0L) (totalSec / 60L).coerceAtLeast(1L) else 0L
         val totalPlays = stats.sumOf { it.playCount }
         val topArtist = stats
             .groupBy { it.track.artist.substringBefore(",").trim().ifBlank { "Artista" } }
-            .map { (name, list) -> name to list.sumOf { it.playCount } }
-            .maxByOrNull { it.second } ?: ("Tu artista" to 0)
+            .map { (name, list) ->
+                val sec = list.sumOf { it.listenedSec }
+                val plays = list.sumOf { it.playCount }
+                Triple(name, plays, sec * 2 + plays * 30L)
+            }
+            .maxByOrNull { it.third }
+            ?.let { it.first to it.second }
+            ?: ("Tu artista" to 0)
 
         showMessage("Generando tu tarjeta Brook Wrapped...")
         viewModelScope.launch {
@@ -462,7 +469,12 @@ class NoctaliaViewModel : ViewModel() {
     fun cacheTrackListOffline(tracks: List<Track>, label: String) {
         if (tracks.isEmpty()) return
         viewModelScope.launch {
-            val pending = tracks.filterNot { offlineCache.isCached(it.id) }.take(30)
+            val remoteTracks = tracks.filter { SecurityValidators.isValidVideoId(it.id) }
+            if (remoteTracks.isEmpty()) {
+                showMessage("Las canciones de $label ya están en tu almacenamiento local.")
+                return@launch
+            }
+            val pending = remoteTracks.filterNot { offlineCache.isCached(it.id) }.take(30)
             if (pending.isEmpty()) {
                 showMessage("Todas las canciones de $label ya están guardadas sin conexión.")
                 return@launch

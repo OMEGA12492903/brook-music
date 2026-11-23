@@ -439,12 +439,18 @@ class LibraryRepository(context: Context) {
 
     fun buildCloudBackupPayload(): CloudBackupPayload {
         val cur = _state.value
+        // No subir metadatos/IDs de archivos locales del teléfono (`loc_<mediaStoreId>`): son privados y específicos de este dispositivo.
+        val cloudStats = cur.stats.filterValues { !SecurityValidators.isLocalTrackId(it.track.id) }
+        val cloudFavs = cur.favorites.filterNot { SecurityValidators.isLocalTrackId(it.id) }
+        val cloudPls = cur.playlists
+            .mapValues { (_, list) -> list.filterNot { SecurityValidators.isLocalTrackId(it.id) } }
+            .filterValues { it.isNotEmpty() }
         return CloudBackupPayload(
             version = 1,
             updatedAtMs = System.currentTimeMillis(),
-            stats = cur.stats,
-            favorites = cur.favorites,
-            playlists = cur.playlists,
+            stats = cloudStats,
+            favorites = cloudFavs,
+            playlists = cloudPls,
         )
     }
 
@@ -458,6 +464,7 @@ class LibraryRepository(context: Context) {
         val mergedStats = LinkedHashMap(cur.stats)
         remote.stats.entries.take(MAX_STATS).forEach { (_, rStat) ->
             val cleanTrack = SecurityValidators.sanitizeTrack(rStat.track) ?: return@forEach
+            if (SecurityValidators.isLocalTrackId(cleanTrack.id)) return@forEach
             val existing = mergedStats[cleanTrack.id]
             mergedStats[cleanTrack.id] = TrackStat(
                 track = existing?.track ?: cleanTrack,
@@ -477,14 +484,19 @@ class LibraryRepository(context: Context) {
             mergedStats
         }
 
-        val cleanRemoteFavs = remote.favorites.mapNotNull { SecurityValidators.sanitizeTrack(it) }
+        val cleanRemoteFavs = remote.favorites
+            .mapNotNull { SecurityValidators.sanitizeTrack(it) }
+            .filterNot { SecurityValidators.isLocalTrackId(it.id) }
         val mergedFavs = (cur.favorites + cleanRemoteFavs).distinctBy { it.id }.take(MAX_FAVORITES)
 
         val mergedPls = LinkedHashMap(cur.playlists)
         remote.playlists.entries.take(MAX_PLAYLISTS).forEach { (rawName, rawTracks) ->
             val name = rawName.trim().take(36)
             if (name.isEmpty()) return@forEach
-            val cleanTracks = rawTracks.mapNotNull { SecurityValidators.sanitizeTrack(it) }
+            val cleanTracks = rawTracks
+                .mapNotNull { SecurityValidators.sanitizeTrack(it) }
+                .filterNot { SecurityValidators.isLocalTrackId(it.id) }
+            if (cleanTracks.isEmpty()) return@forEach
             val existing = mergedPls[name].orEmpty()
             mergedPls[name] = (existing + cleanTracks).distinctBy { it.id }.take(MAX_TRACKS_PER_PLAYLIST)
         }
