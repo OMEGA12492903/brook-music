@@ -566,8 +566,8 @@ class NoctaliaPlaybackService : MediaLibraryService() {
             mediaId.startsWith("aa_rec:") -> lib.recent.firstOrNull { it.id == mediaId.removePrefix("aa_rec:") }
             mediaId.startsWith("aa_pl:") -> {
                 val payload = mediaId.removePrefix("aa_pl:")
-                val plName = payload.substringBefore("|")
-                val tid = payload.substringAfter("|", "")
+                val plName = payload.substringBeforeLast("|")
+                val tid = payload.substringAfterLast("|", "")
                 lib.playlists[plName]?.firstOrNull { it.id == tid }
             }
             mediaId.startsWith("aa_loc:") -> app.localAudio.findById(mediaId.removePrefix("aa_loc:"))

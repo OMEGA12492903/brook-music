@@ -371,7 +371,8 @@ fun BrookAnimatedPlayerBackground(
     var prevSoftBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
     val bitmapCrossfade = remember { Animatable(1f) }
 
-    LaunchedEffect(coverUrl) {
+    LaunchedEffect(coverUrl, style) {
+        if (style == PlayerBgStyle.OLED) return@LaunchedEffect
         val next = AlbumColorCache.extract(context, coverUrl)
         if (next.softBitmap !== artData.softBitmap) {
             prevSoftBitmap = artData.softBitmap
@@ -399,18 +400,7 @@ fun BrookAnimatedPlayerBackground(
     val c4 by animateColorAsState(activePalette.getOrElse(4) { NoctaliaColors.Pink }, colorSpec, label = "bg_c4")
     val baseColor by animateColorAsState(targetBase, colorSpec, label = "bg_base")
 
-    // Modo Negro OLED puro (#000000): 0% animación, 0 GPU y píxeles apagados en pantallas AMOLED
-    if (style == PlayerBgStyle.OLED) {
-        Box(
-            modifier = modifier
-                .fillMaxSize()
-                .background(Color.Black),
-            content = content,
-        )
-        return
-    }
-
-    // Reloj continuo con aceleración/desaceleración suave; se detiene a 0% GPU en modo Estático o en segundo plano
+    // Reloj continuo con aceleración/desaceleración suave; se detiene a 0% GPU en modo Estático, OLED o en segundo plano
     var animTime by remember { mutableFloatStateOf(0f) }
     var playingState by remember { mutableStateOf(isPlaying) }
     playingState = isPlaying
@@ -451,12 +441,15 @@ fun BrookAnimatedPlayerBackground(
     }
 
     val palList = listOf(c0, c1, c2, c3, c4)
+    val isOled = style == PlayerBgStyle.OLED
 
+    // Un único Box mantiene el mismo punto de llamada de `content()` al alternar OLED <-> Animado (0 parpadeos y 0 reinicio de scroll)
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(baseColor),
+            .background(if (isOled) Color.Black else baseColor),
     ) {
+        if (!isOled) {
         Canvas(modifier = Modifier.fillMaxSize()) {
             val w = size.width
             val h = size.height
@@ -691,6 +684,7 @@ fun BrookAnimatedPlayerBackground(
                     )
                 )
             )
+        }
         }
 
         content()

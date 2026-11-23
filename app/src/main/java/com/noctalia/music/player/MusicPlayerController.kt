@@ -1359,8 +1359,8 @@ class MusicPlayerController(
             mediaId.startsWith("aa_rec:") -> pickFromList(lib.recent, mediaId.removePrefix("aa_rec:"))
             mediaId.startsWith("aa_pl:") -> {
                 val payload = mediaId.removePrefix("aa_pl:")
-                val plName = payload.substringBefore("|")
-                val tid = payload.substringAfter("|", "")
+                val plName = payload.substringBeforeLast("|")
+                val tid = payload.substringAfterLast("|", "")
                 pickFromList(lib.playlists[plName].orEmpty(), tid)
             }
             mediaId.startsWith("aa_loc:") -> pickFromList(localAudio.state.value.tracks, mediaId.removePrefix("aa_loc:"))
@@ -1372,12 +1372,23 @@ class MusicPlayerController(
 
         val clean = selectedRaw ?: return null
         cancelActiveCrossfade()
+        fadeJob?.cancel()
+        isFadingOutToPause = false
         playJob?.cancel()
         radioJob?.cancel()
         resetSmartShufflePool()
         pendingPlayRadioWhenReady = false
         isTransitioningNext = false
         releaseTransitionWakeLock()
+
+        activePlayer()?.let { p ->
+            try {
+                p.volume = 1f
+                applySpeedPitchTo(p)
+                syncRepeatModeOn(p)
+            } catch (_: Throwable) {
+            }
+        }
 
         val prev = _state.value.currentTrack
         if (prev != null && prev.id != clean.id) {
@@ -1416,8 +1427,8 @@ class MusicPlayerController(
             }
             mediaId.startsWith("aa_pl:") -> {
                 val payload = mediaId.removePrefix("aa_pl:")
-                val plName = payload.substringBefore("|")
-                val tid = payload.substringAfter("|", "")
+                val plName = payload.substringBeforeLast("|")
+                val tid = payload.substringAfterLast("|", "")
                 val tracks = lib.playlists[plName].orEmpty()
                 val idx = tracks.indexOfFirst { it.id == tid }
                 if (idx >= 0) playTrackList(tracks, idx)

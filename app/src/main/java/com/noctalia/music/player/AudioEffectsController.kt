@@ -161,6 +161,10 @@ class AudioEffectsController(
     fun refreshActiveAudioOutput(applyProfile: Boolean = true) {
         val (key, label, isBt) = detectActiveOutput()
         val prevKey = _state.value.activeOutputKey
+        // Guardar cualquier cambio pendiente (debounce 400ms) en el dispositivo ANTERIOR antes de cambiar de salida
+        if (key != prevKey && pendingProfilePersist) {
+            flushPendingPersists()
+        }
         val settings = library.state.value.settings
         _state.update {
             it.copy(
@@ -170,7 +174,7 @@ class AudioEffectsController(
                 savedProfileCount = settings.audioProfiles.size,
             )
         }
-        if (applyProfile && _state.value.perDeviceProfilesEnabled && (key != prevKey || ! _state.value.attached)) {
+        if (applyProfile && _state.value.perDeviceProfilesEnabled && (key != prevKey || !_state.value.attached)) {
             val saved = settings.audioProfiles[key]
             if (saved != null) {
                 loadProfile(saved)
