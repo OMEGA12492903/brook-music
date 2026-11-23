@@ -4,10 +4,12 @@ import android.annotation.SuppressLint
 import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Message
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
@@ -20,6 +22,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -462,7 +466,10 @@ fun SpotifyLoginDialog(
             wipeSpotifyWebView(webViewRef)
             onDismiss()
         },
-        properties = DialogProperties(usePlatformDefaultWidth = false),
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false,
+        ),
     ) {
         val dialogWindow = (LocalView.current.parent as? DialogWindowProvider)?.window
         DisposableEffect(dialogWindow) {
@@ -483,7 +490,9 @@ fun SpotifyLoginDialog(
             modifier = Modifier
                 .fillMaxSize()
                 .background(NoctaliaColors.BgDeep)
-                .statusBarsPadding(),
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .imePadding(),
         ) {
             Row(
                 modifier = Modifier
@@ -552,6 +561,25 @@ fun SpotifyLoginDialog(
                             fontWeight = FontWeight.ExtraBold,
                         )
                     }
+                } else {
+                    IconButton(
+                        onClick = {
+                            statusText = "Recargando inicio de sesión..."
+                            val cur = webViewRef?.url
+                            if (cur.isNullOrBlank() || cur == "about:blank") {
+                                webViewRef?.loadUrl(SPOTIFY_LOGIN_URL)
+                            } else {
+                                webViewRef?.reload()
+                            }
+                        },
+                        modifier = Modifier.size(36.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Refresh,
+                            contentDescription = "Recargar",
+                            tint = NoctaliaColors.TextMuted,
+                        )
+                    }
                 }
                 IconButton(
                     onClick = {
@@ -578,12 +606,23 @@ fun SpotifyLoginDialog(
             }
 
             AndroidView(
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
                 factory = { ctx ->
                     WebView(ctx).apply {
+                        // CRÍTICO: `MATCH_PARENT` explícito evita que Compose mida el WebView con `AT_MOST` (WRAP_CONTENT),
+                        // lo que colapsaba a 0px el `<main style="position:absolute; inset:0">` de accounts.spotify.com!
+                        layoutParams = ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                        )
+                        setBackgroundColor(android.graphics.Color.parseColor("#121212"))
                         webViewRef = this
                         settings.javaScriptEnabled = true
                         settings.domStorageEnabled = true
+                        settings.useWideViewPort = true
+                        settings.loadWithOverviewMode = true
                         settings.allowFileAccess = false
                         settings.allowContentAccess = false
                         settings.setGeolocationEnabled(false)
@@ -591,8 +630,10 @@ fun SpotifyLoginDialog(
                         settings.javaScriptCanOpenWindowsAutomatically = true
                         settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
                         settings.cacheMode = WebSettings.LOAD_DEFAULT
-                        // Usar UA nativo de Chrome Android sin "; wv" para que Google SSO y Spotify funcionen sin bloqueos
-                        settings.userAgentString = settings.userAgentString.replace("; wv", "")
+                        // Usar UA limpio de Chrome Android (sin "; wv" ni "Version/4.0 ") para Google SSO y Spotify
+                        settings.userAgentString = settings.userAgentString
+                            .replace("; wv", "")
+                            .replace("Version/4.0 ", "")
 
                         val bridge = SpotifyTokenJsBridge(
                             expectedNonce = bridgeNonce,
@@ -676,9 +717,24 @@ fun SpotifyLoginDialog(
                         webViewClient = object : WebViewClient() {
                             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                                 val uri = request?.url ?: return true
+                                if (!request.isForMainFrame && uri.toString().equals("about:blank", ignoreCase = true)) {
+                                    return false
+                                }
                                 // Bloquea deep links `spotify://`, `intent://`, `http://`, etc. para no salir del WebView
                                 if (!uri.scheme.equals("https", ignoreCase = true)) return true
                                 return !isAllowedSpotifyLoginHost(uri.host)
+                            }
+
+                            override fun onReceivedError(
+                                view: WebView?,
+                                request: WebResourceRequest?,
+                                error: WebResourceError?,
+                            ) {
+                                super.onReceivedError(view, request, error)
+                                if (request?.isForMainFrame == true) {
+                                    isLoadingPage = false
+                                    statusText = "Error de conexión · Pulsa recargar arriba"
+                                }
                             }
 
                             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {

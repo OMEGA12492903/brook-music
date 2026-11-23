@@ -1,6 +1,7 @@
 package com.noctalia.music.ui.screens
 
 import android.annotation.SuppressLint
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.CookieManager
 import android.webkit.WebResourceRequest
@@ -13,6 +14,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material.icons.Icons
@@ -98,7 +101,10 @@ fun YouTubeLoginDialog(
             wipeWebViewData(webViewRef)
             onDismiss()
         },
-        properties = DialogProperties(usePlatformDefaultWidth = false),
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false,
+        ),
     ) {
         // Activar FLAG_SECURE en la ventana del diálogo de login
         val dialogWindow = (LocalView.current.parent as? DialogWindowProvider)?.window
@@ -119,7 +125,9 @@ fun YouTubeLoginDialog(
             modifier = Modifier
                 .fillMaxSize()
                 .background(NoctaliaColors.BgDeep)
-                .statusBarsPadding(),
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .imePadding(),
         ) {
             Row(
                 modifier = Modifier
@@ -155,19 +163,29 @@ fun YouTubeLoginDialog(
             }
 
             AndroidView(
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
                 factory = { ctx ->
                     WebView(ctx).apply {
+                        layoutParams = ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                        )
                         webViewRef = this
                         settings.javaScriptEnabled = true
                         settings.domStorageEnabled = true
+                        settings.useWideViewPort = true
+                        settings.loadWithOverviewMode = true
                         settings.allowFileAccess = false
                         settings.allowContentAccess = false
                         settings.setGeolocationEnabled(false)
                         settings.setSupportMultipleWindows(false)
                         settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
                         settings.cacheMode = WebSettings.LOAD_NO_CACHE
-                        settings.userAgentString = settings.userAgentString.replace("; wv", "")
+                        settings.userAgentString = settings.userAgentString
+                            .replace("; wv", "")
+                            .replace("Version/4.0 ", "")
 
                         val cm = CookieManager.getInstance()
                         cm.setAcceptCookie(true)
