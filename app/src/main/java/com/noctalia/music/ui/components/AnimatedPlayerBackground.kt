@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.drawable.BitmapDrawable
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
@@ -47,6 +48,7 @@ import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.PI
 import kotlin.math.cos
+import kotlin.math.hypot
 import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.random.Random
@@ -105,7 +107,7 @@ internal object AlbumColorCache {
             try {
                 val req = ImageRequest.Builder(context)
                     .data(url)
-                    .size(64, 64)
+                    .size(96, 96)
                     .allowHardware(false)
                     .build()
                 val res = context.imageLoader.execute(req)
@@ -131,10 +133,10 @@ internal object AlbumColorCache {
             src
         }
         val scaled = Bitmap.createScaledBitmap(safeSrc, 40, 40, true)
-        // Mini-bitmap 16x16 reescalado con FilterQuality.High produce un desenfoque fluido GPU en API 26-35
-        val softRaw = Bitmap.createScaledBitmap(safeSrc, 16, 16, true)
+        // Recorte central sin bandas negras + desenfoque gaussiano real (3 pasadas separables sobre 72x72)
+        // Produce un difuminado sedoso estilo Apple Music sin píxeles en rejilla ni bordes negros.
         val softImg = try {
-            softRaw.asImageBitmap()
+            createSmoothBlurredArt(safeSrc)?.asImageBitmap()
         } catch (_: Throwable) {
             null
         }
@@ -245,6 +247,107 @@ internal object AlbumColorCache {
         hsv[2] = (hsv[2] * 0.88f).coerceIn(0.42f, 0.90f)
         return Color(android.graphics.Color.HSVToColor(hsv))
     }
+
+    /**
+     * Genera un bitmap 72x72 con recorte central (elimina posibles bandas negras de miniaturas 4:3/16:9)
+     * y desenfoque gaussiano real mediante 3 pasadas de box-blur separable (O(W*H), < 1 ms).
+     */
+    private fun createSmoothBlurredArt(src: Bitmap): Bitmap? {
+        val sw = src.width
+        val sh = src.height
+        if (sw < 4 || sh < 4) return null
+
+        // Recortar cuadrado central con ligero margen interior para evitar franjas negras de YouTube hqdefault
+        val minSide = kotlin.math.min(sw, sh)
+        val isSquare = kotlin.math.abs(sw - sh) <= (minSide * 0.08f)
+        val cropSide = if (isSquare) {
+            (minSide * 0.92f).roundToInt().coerceAtLeast(4)
+        } else {
+            (minSide * 0.72f).roundToInt().coerceAtLeast(4)
+        }
+        val cropX = ((sw - cropSide) / 2).coerceIn(0, sw - cropSide)
+        val cropY = ((sh - cropSide) / 2).coerceIn(0, sh - cropSide)
+
+        val cropped = Bitmap.createBitmap(src, cropX, cropY, cropSide, cropSide)
+        val size = 72
+        val work = Bitmap.createScaledBitmap(cropped, size, size, true)
+        if (cropped !== src && cropped !== work) cropped.recycle()
+
+        val pix = IntArray(size * size)
+        val tmp = IntArray(size * size)
+        work.getPixels(pix, 0, size, 0, 0, size, size)
+        if (work !== src) work.recycle()
+
+        // 3 pasadas de blur separable horizontal + vertical (radio 7 sobre 72px ≈ desenfoque 140px en 1080p)
+        val radius = 7
+        val window = radius * 2 + 1
+        repeat(3) {
+            // Pasada horizontal: pix -> tmp
+            for (y in 0 until size) {
+                val row = y * size
+                var sumR = 0
+                var sumG = 0
+                var sumB = 0
+                for (dx in -radius..radius) {
+                    val c = pix[row + dx.coerceIn(0, size - 1)]
+                    sumR += (c ushr 16) and 0xFF
+                    sumG += (c ushr 8) and 0xFF
+                    sumB += c and 0xFF
+                }
+                for (x in 0 until size) {
+                    tmp[row + x] = (0xFF shl 24) or
+                        ((sumR / window) shl 16) or
+                        ((sumG / window) shl 8) or
+                        (sumB / window)
+                    val outIdx = (x - radius).coerceIn(0, size - 1)
+                    val inIdx = (x + radius + 1).coerceIn(0, size - 1)
+                    val cOut = pix[row + outIdx]
+                    val cIn = pix[row + inIdx]
+                    sumR += ((cIn ushr 16) and 0xFF) - ((cOut ushr 16) and 0xFF)
+                    sumG += ((cIn ushr 8) and 0xFF) - ((cOut ushr 8) and 0xFF)
+                    sumB += (cIn and 0xFF) - (cOut and 0xFF)
+                }
+            }
+            // Pasada vertical: tmp -> pix
+            for (x in 0 until size) {
+                var sumR = 0
+                var sumG = 0
+                var sumB = 0
+                for (dy in -radius..radius) {
+                    val c = tmp[dy.coerceIn(0, size - 1) * size + x]
+                    sumR += (c ushr 16) and 0xFF
+                    sumG += (c ushr 8) and 0xFF
+                    sumB += c and 0xFF
+                }
+                for (y in 0 until size) {
+                    pix[y * size + x] = (0xFF shl 24) or
+                        ((sumR / window) shl 16) or
+                        ((sumG / window) shl 8) or
+                        (sumB / window)
+                    val outIdx = (y - radius).coerceIn(0, size - 1)
+                    val inIdx = (y + radius + 1).coerceIn(0, size - 1)
+                    val cOut = tmp[outIdx * size + x]
+                    val cIn = tmp[inIdx * size + x]
+                    sumR += ((cIn ushr 16) and 0xFF) - ((cOut ushr 16) and 0xFF)
+                    sumG += ((cIn ushr 8) and 0xFF) - ((cOut ushr 8) and 0xFF)
+                    sumB += (cIn and 0xFF) - (cOut and 0xFF)
+                }
+            }
+        }
+
+        // Ligerísimo impulso de saturación para que el fondo difuminado no se apague al oscurecerlo
+        val hsv = FloatArray(3)
+        for (i in pix.indices) {
+            android.graphics.Color.colorToHSV(pix[i], hsv)
+            hsv[1] = (hsv[1] * 1.18f).coerceAtMost(0.95f)
+            hsv[2] = (hsv[2] * 0.92f).coerceIn(0.06f, 0.88f)
+            pix[i] = android.graphics.Color.HSVToColor(hsv)
+        }
+
+        val out = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        out.setPixels(pix, 0, size, 0, 0, size, size)
+        return out
+    }
 }
 
 /**
@@ -263,9 +366,20 @@ fun BrookAnimatedPlayerBackground(
 ) {
     val context = LocalContext.current
     var artData by remember { mutableStateOf(AlbumColorCache.noctaliaFallback) }
+    var prevSoftBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
+    val bitmapCrossfade = remember { Animatable(1f) }
 
     LaunchedEffect(coverUrl) {
-        artData = AlbumColorCache.extract(context, coverUrl)
+        val next = AlbumColorCache.extract(context, coverUrl)
+        if (next.softBitmap !== artData.softBitmap) {
+            prevSoftBitmap = artData.softBitmap
+            artData = next
+            bitmapCrossfade.snapTo(0f)
+            bitmapCrossfade.animateTo(1f, tween(durationMillis = 700, easing = FastOutSlowInEasing))
+            prevSoftBitmap = null
+        } else {
+            artData = next
+        }
     }
 
     val activePalette = if (useCoverColors) artData.colors else AlbumColorCache.noctaliaFallback.colors
@@ -401,60 +515,80 @@ fun BrookAnimatedPlayerBackground(
                 }
 
                 PlayerBgStyle.VORTEX -> {
-                    val img = artData.softBitmap
+                    val img = if (useCoverColors) artData.softBitmap else null
+                    val oldImg = if (useCoverColors) prevSoftBitmap else null
+                    val fade = bitmapCrossfade.value
+
+                    // Diagonal completa * 1.38 garantiza que incluso girando 45° y desplazándose suavemente,
+                    // los bordes del cuadrado SIEMPRE quedan ~200px fuera de las 4 esquinas de la pantalla.
+                    val diag = hypot(w, h)
+                    val side1 = (diag * (1.36f + 0.05f * sin(t * 0.42f))).roundToInt()
+                    val ox1 = (w * 0.5f + sin(t * 0.34f) * w * 0.05f).roundToInt()
+                    val oy1 = (h * 0.5f + cos(t * 0.28f) * h * 0.04f).roundToInt()
+                    val rot1 = (t * 6.5f) % 360f
+
+                    val side2 = (diag * (1.42f + 0.05f * cos(t * 0.37f))).roundToInt()
+                    val ox2 = (w * 0.5f + cos(t * 0.31f) * w * 0.05f).roundToInt()
+                    val oy2 = (h * 0.5f + sin(t * 0.26f) * h * 0.04f).roundToInt()
+                    val rot2 = (-t * 5.0f) % 360f
+
+                    if (oldImg != null && fade < 0.99f) {
+                        withTransform({ rotate(degrees = rot1, pivot = Offset(ox1.toFloat(), oy1.toFloat())) }) {
+                            drawImage(
+                                image = oldImg,
+                                dstOffset = IntOffset(ox1 - side1 / 2, oy1 - side1 / 2),
+                                dstSize = IntSize(side1, side1),
+                                alpha = (1f - fade) * 0.85f,
+                                filterQuality = FilterQuality.High,
+                            )
+                        }
+                    }
+
                     if (img != null) {
-                        val side1 = (kotlin.math.max(w, h) * (1.28f + 0.08f * sin(t * 0.5f))).roundToInt()
-                        val ox1 = (w * 0.5f + sin(t * 0.45f) * w * 0.12f).roundToInt()
-                        val oy1 = (h * 0.44f + cos(t * 0.38f) * h * 0.08f).roundToInt()
-                        withTransform({
-                            rotate(degrees = (t * 11f) % 360f, pivot = Offset(ox1.toFloat(), oy1.toFloat()))
-                        }) {
+                        withTransform({ rotate(degrees = rot1, pivot = Offset(ox1.toFloat(), oy1.toFloat())) }) {
                             drawImage(
                                 image = img,
                                 dstOffset = IntOffset(ox1 - side1 / 2, oy1 - side1 / 2),
                                 dstSize = IntSize(side1, side1),
-                                alpha = 0.72f,
+                                alpha = fade * 0.86f,
                                 filterQuality = FilterQuality.High,
                             )
                         }
-
-                        val side2 = (kotlin.math.max(w, h) * (1.16f + 0.09f * cos(t * 0.6f))).roundToInt()
-                        val ox2 = (w * 0.5f + cos(t * 0.52f) * w * 0.14f).roundToInt()
-                        val oy2 = (h * 0.60f + sin(t * 0.41f) * h * 0.08f).roundToInt()
-                        withTransform({
-                            rotate(degrees = (-t * 14f) % 360f, pivot = Offset(ox2.toFloat(), oy2.toFloat()))
-                        }) {
+                        withTransform({ rotate(degrees = rot2, pivot = Offset(ox2.toFloat(), oy2.toFloat())) }) {
                             drawImage(
                                 image = img,
                                 dstOffset = IntOffset(ox2 - side2 / 2, oy2 - side2 / 2),
                                 dstSize = IntSize(side2, side2),
-                                alpha = 0.42f,
+                                alpha = fade * 0.34f,
                                 filterQuality = FilterQuality.High,
                                 blendMode = BlendMode.Screen,
                             )
                         }
                     }
 
-                    // Baño suave de color para enriquecer o aplicar paleta Noctalia
-                    val washA = if (useCoverColors) 0.24f else 0.55f
+                    // Baño radial suave de respiración (si useCoverColors=false pinta una niebla Noctalia suave)
+                    val washA = if (img != null) 0.22f else 0.56f
+                    val glowRad = diag * 0.58f
+                    val g1 = Offset(w * (0.30f + 0.22f * sin(t * 0.42f)), h * (0.26f + 0.10f * cos(t * 0.36f)))
+                    val g2 = Offset(w * (0.72f + 0.22f * cos(t * 0.38f)), h * (0.74f + 0.10f * sin(t * 0.33f)))
                     drawCircle(
                         brush = Brush.radialGradient(
-                            colors = listOf(c0.copy(alpha = washA), Color.Transparent),
-                            center = Offset(w * (0.3f + 0.25f * sin(t * 0.5f)), h * 0.28f),
-                            radius = w * 0.9f,
+                            colors = listOf(c0.copy(alpha = washA), c0.copy(alpha = washA * 0.4f), Color.Transparent),
+                            center = g1,
+                            radius = glowRad,
                         ),
-                        radius = w * 0.9f,
-                        center = Offset(w * (0.3f + 0.25f * sin(t * 0.5f)), h * 0.28f),
+                        radius = glowRad,
+                        center = g1,
                         blendMode = BlendMode.Screen,
                     )
                     drawCircle(
                         brush = Brush.radialGradient(
-                            colors = listOf(c1.copy(alpha = washA), Color.Transparent),
-                            center = Offset(w * (0.7f + 0.25f * cos(t * 0.45f)), h * 0.72f),
-                            radius = w * 0.9f,
+                            colors = listOf(c1.copy(alpha = washA), c1.copy(alpha = washA * 0.4f), Color.Transparent),
+                            center = g2,
+                            radius = glowRad,
                         ),
-                        radius = w * 0.9f,
-                        center = Offset(w * (0.7f + 0.25f * cos(t * 0.45f)), h * 0.72f),
+                        radius = glowRad,
+                        center = g2,
                         blendMode = BlendMode.Screen,
                     )
                 }
