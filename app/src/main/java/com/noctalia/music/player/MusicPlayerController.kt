@@ -98,6 +98,7 @@ class MusicPlayerController(
     private var sleepJob: Job? = null
     private var prefetchJob: Job? = null
     private var fadeJob: Job? = null
+    private var controllerConnectJob: Job? = null
 
     private val history = ArrayDeque<Track>()
     private val failedPreloadIds = HashSet<String>()
@@ -105,6 +106,9 @@ class MusicPlayerController(
     private var consecutiveAutoErrors = 0
     private var isFadingOutToPause = false
     private var prefetchedTrackId: String? = null
+    private var lastPrefetchFailedId: String? = null
+    private var lastPrefetchFailedAtMs: Long = 0L
+    private var preEndSyncedForTrackId: String? = null
     private var plannedNextTrackId: String? = null
     private var countedPlayForTrackId: String? = null
     private var listeningAccumMs: Long = 0L
@@ -210,6 +214,7 @@ class MusicPlayerController(
                 // Repetición nativa (Player.REPEAT_MODE_ONE) sin pasar nunca por STATE_ENDED
                 countedPlayForTrackId = null
                 listeningAccumMs = 0L
+                preEndSyncedForTrackId = null
                 skippedSegmentKeys.clear()
                 _state.update { it.copy(positionMs = 0L) }
                 return
@@ -279,15 +284,19 @@ class MusicPlayerController(
                 return
             }
 
-            // 2. Si falló la precarga de la pista SIGUIENTE (índice 1) mientras la actual aún suena:
-            //    NO cortar la canción actual; retirar índice 1 y continuar reproduciendo.
+            // 2. Si falló la precarga de la pista SIGUIENTE (índice 1) mientras la actual aún suena
+            //    (ya sea fallo al resolver o HTTP 403/IO sobre una URL cacheada de índice 1):
+            //    NO cortar la canción actual; invalidar su caché, retirar índice 1 y continuar.
             val resolveEx = findCause(error, TrackResolveFailedException::class.java)
-            if (resolveEx != null && p != null && cur != null &&
-                resolveEx.videoId != cur.id &&
+            val httpEx = findCause(error, HttpDataSource.HttpDataSourceException::class.java)
+            val failedNextId = resolveEx?.videoId ?: (httpEx?.dataSpec?.customData as? String)
+            if (failedNextId != null && p != null && cur != null &&
+                failedNextId != cur.id &&
                 p.currentMediaItemIndex == 0 &&
                 p.mediaItemCount > 1
             ) {
-                failedPreloadIds.add(resolveEx.videoId)
+                api.invalidateCachedStream(failedNextId)
+                failedPreloadIds.add(failedNextId)
                 try {
                     p.removeMediaItems(1, p.mediaItemCount)
                     p.seekTo(0, savedPos)
@@ -614,12 +623,25 @@ class MusicPlayerController(
     private fun prefetchNextInQueue(explicitNext: Track? = null) {
         val next = explicitNext ?: computeNextTrackForPreload() ?: return
         if (offlineCache.isCached(next.id)) return
-        if (next.id == prefetchedTrackId && api.getCachedStream(next.id) != null) return
+        // No cancelar un prefetch ya en vuelo para la misma pista ni reintentar en bucle si acaba de fallar
+        if (next.id == prefetchedTrackId && (prefetchJob?.isActive == true || api.getCachedStream(next.id) != null)) {
+            return
+        }
+        val now = System.currentTimeMillis()
+        if (next.id == lastPrefetchFailedId && (now - lastPrefetchFailedAtMs) < PREFETCH_RETRY_COOLDOWN_MS) {
+            return
+        }
         prefetchedTrackId = next.id
         prefetchJob?.cancel()
         prefetchJob = scope.launch {
             try {
-                val resolved = api.resolveStreamUrl(next.id, forceRefresh = false, preferHls = false) ?: return@launch
+                val resolved = api.resolveStreamUrl(next.id, forceRefresh = false, preferHls = false)
+                if (resolved == null) {
+                    lastPrefetchFailedId = next.id
+                    lastPrefetchFailedAtMs = System.currentTimeMillis()
+                    return@launch
+                }
+                if (lastPrefetchFailedId == next.id) lastPrefetchFailedId = null
                 // Si la siguiente pista solo está en HLS, actualizar su MediaItem en índice 1 con MimeTypes.APPLICATION_M3U8
                 if (NoctaliaPlaybackService.isHlsUrlOrMime(resolved.url, resolved.mimeType)) {
                     val p = activePlayer() ?: return@launch
@@ -638,6 +660,8 @@ class MusicPlayerController(
                     }
                 }
             } catch (_: Throwable) {
+                lastPrefetchFailedId = next.id
+                lastPrefetchFailedAtMs = System.currentTimeMillis()
             }
         }
     }
@@ -649,6 +673,7 @@ class MusicPlayerController(
     private fun commitNativeTransition(mediaItem: MediaItem) {
         val newId = mediaItem.mediaId
         if (newId.isBlank() || newId == _state.value.currentTrack?.id) return
+        playJob?.cancel()
 
         val st = _state.value
         val qIdx = st.queue.indexOfFirst { it.id == newId }
@@ -683,23 +708,25 @@ class MusicPlayerController(
 
         commitTrackMetadataChange(nextTrack, updatedQueue)
 
-        // Mantener la línea temporal de ExoPlayer ligera: eliminar la pista anterior (índice 0)
-        // y encolar inmediatamente la nueva pista siguiente en índice 1.
-        val p = activePlayer()
-        if (p != null) {
-            try {
-                if (p.currentMediaItemIndex > 0) {
-                    p.removeMediaItems(0, p.currentMediaItemIndex)
+        // Diferir la mutación del Timeline de ExoPlayer al siguiente tick del Looper Main (Dispatchers.Main)
+        // para no modificar la línea temporal de forma reentrante dentro de onMediaItemTransition.
+        scope.launch(Dispatchers.Main) {
+            if (_state.value.currentTrack?.id != nextTrack.id) return@launch
+            val p = activePlayer()
+            if (p != null) {
+                try {
+                    if (p.currentMediaItemIndex > 0) {
+                        p.removeMediaItems(0, p.currentMediaItemIndex)
+                    }
+                    p.volume = 1f
+                } catch (_: Throwable) {
                 }
-                p.volume = 1f
-            } catch (_: Throwable) {
             }
+            if (_state.value.autoRadio && _state.value.queue.isEmpty()) {
+                prefetchRadio(nextTrack.id, playImmediately = false)
+            }
+            syncNextMediaItemInPlayer(alsoPrefetch = true)
         }
-
-        if (_state.value.autoRadio && _state.value.queue.isEmpty()) {
-            prefetchRadio(nextTrack.id, playImmediately = false)
-        }
-        syncNextMediaItemInPlayer(alsoPrefetch = true)
     }
 
     private fun commitTrackMetadataChange(nextTrack: Track, updatedQueue: List<Track>? = null) {
@@ -710,6 +737,7 @@ class MusicPlayerController(
         activeSkipSegments = emptyList()
         skippedSegmentKeys.clear()
         failedPreloadIds.clear()
+        preEndSyncedForTrackId = null
         prefetchedTrackId = null
         plannedNextTrackId = null
 
@@ -788,6 +816,8 @@ class MusicPlayerController(
 
     private fun fadeOutAndPause(p: Player) {
         fadeJob?.cancel()
+        isTransitioningNext = false
+        releaseTransitionWakeLock()
         if (!audioEffects.state.value.smoothFadeEnabled) {
             isFadingOutToPause = false
             p.pause()
@@ -814,8 +844,16 @@ class MusicPlayerController(
     }
 
     private fun connectController() {
-        scope.launch {
+        if (controllerConnectJob?.isActive == true || mediaController?.isConnected == true) return
+        controllerConnectJob = scope.launch {
             try {
+                val old = mediaController
+                mediaController = null
+                try {
+                    old?.removeListener(playerListener)
+                    old?.release()
+                } catch (_: Throwable) {
+                }
                 val token = SessionToken(context, ComponentName(context, NoctaliaPlaybackService::class.java))
                 val ctrl = MediaController.Builder(context, token).buildAsync().await()
                 mediaController = ctrl
@@ -837,11 +875,14 @@ class MusicPlayerController(
             return servicePlayer
         }
         mediaController?.takeIf { it.isConnected }?.let { return it }
+        controllerConnectJob?.cancel()
+        val old = mediaController
+        mediaController = null
         try {
-            mediaController?.removeListener(playerListener)
+            old?.removeListener(playerListener)
+            old?.release()
         } catch (_: Throwable) {
         }
-        mediaController = null
         return try {
             val token = SessionToken(context, ComponentName(context, NoctaliaPlaybackService::class.java))
             val ctrl = MediaController.Builder(context, token).buildAsync().await()
@@ -901,7 +942,8 @@ class MusicPlayerController(
                             listeningAccumMs = 0L
                         }
 
-                        if (dur > 0L && (dur - pos) in 1L..25_000L) {
+                        if (dur > 0L && (dur - pos) in 1L..25_000L && preEndSyncedForTrackId != curTrack.id) {
+                            preEndSyncedForTrackId = curTrack.id
                             syncNextMediaItemInPlayer(alsoPrefetch = true)
                         }
 
@@ -951,6 +993,7 @@ class MusicPlayerController(
         activeSkipSegments = emptyList()
         skippedSegmentKeys.clear()
         failedPreloadIds.clear()
+        preEndSyncedForTrackId = null
         prefetchedTrackId = null
         val initialPos = startPositionMs.coerceAtLeast(0L)
 
@@ -1399,5 +1442,6 @@ class MusicPlayerController(
 
     companion object {
         private const val MAX_CONSECUTIVE_AUTO_ERRORS = 3
+        private const val PREFETCH_RETRY_COOLDOWN_MS = 10_000L
     }
 }

@@ -90,7 +90,10 @@ class NoctaliaPlaybackService : MediaSessionService() {
                 val localFile = app.offlineCache.getLocalFile(videoId)
                 if (localFile != null) {
                     app.playerController.onStreamQualityResolved(videoId, "OFFLINE · OPUS")
-                    return@Factory dataSpec.withUri(Uri.fromFile(localFile))
+                    return@Factory dataSpec.buildUpon()
+                        .setUri(Uri.fromFile(localFile))
+                        .setCustomData(videoId)
+                        .build()
                 }
 
                 // 2. Resolver URL Opus/AAC (hit instantáneo si ya se precargó, o petición en segundo plano)
@@ -110,7 +113,10 @@ class NoctaliaPlaybackService : MediaSessionService() {
                 }
 
                 app.playerController.onStreamQualityResolved(videoId, resolved.qualityLabel)
-                dataSpec.withUri(Uri.parse(resolved.url))
+                dataSpec.buildUpon()
+                    .setUri(Uri.parse(resolved.url))
+                    .setCustomData(videoId)
+                    .build()
             } else {
                 dataSpec
             }
@@ -151,9 +157,6 @@ class NoctaliaPlaybackService : MediaSessionService() {
                 }
             }
         })
-
-        // Vincular directamente el ExoPlayer real al controlador para cero pérdidas de eventos en segundo plano
-        app.playerController.attachServicePlayer(player)
 
         val wrappedPlayer = object : ForwardingPlayer(player) {
             override fun getAvailableCommands(): Player.Commands {
@@ -261,6 +264,10 @@ class NoctaliaPlaybackService : MediaSessionService() {
             .setSessionActivity(openAppIntent)
             .setCallback(securityCallback)
             .build()
+
+        // Vincular el ExoPlayer DESPUÉS de construir MediaSession para que MediaSession
+        // procese siempre las transiciones de Timeline antes que nuestro controlador.
+        app.playerController.attachServicePlayer(player)
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
