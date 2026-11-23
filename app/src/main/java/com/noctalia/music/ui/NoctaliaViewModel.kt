@@ -4,7 +4,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.noctalia.music.NoctaliaMusicApp
 import com.noctalia.music.data.AppUpdateInfo
+import com.noctalia.music.data.ArtistMixCard
 import com.noctalia.music.data.CloudSyncState
+import com.noctalia.music.data.HomeRecommendations
 import com.noctalia.music.data.LibraryPayload
 import com.noctalia.music.data.OfflineState
 import com.noctalia.music.data.RemotePlaylist
@@ -36,6 +38,7 @@ data class MainUiState(
     val spotifyPlaylists: List<SpotifyRemotePlaylist> = emptyList(),
     val spotifyImport: SpotifyImportProgress = SpotifyImportProgress(),
     val homeTracks: List<Track> = emptyList(),
+    val homeRecommendations: HomeRecommendations = HomeRecommendations(),
     val loadingHome: Boolean = false,
     val searchQuery: String = "",
     val searchMode: String = "songs", // "songs" | "all" | "artist"
@@ -56,6 +59,7 @@ class NoctaliaViewModel : ViewModel() {
     val api = app.api
     val spotify = app.spotifyClient
     val library = app.library
+    val recommendations = app.recommendations
     val updater = app.updater
     val cloudSync = app.cloudSync
     val offlineCache = app.offlineCache
@@ -80,9 +84,10 @@ class NoctaliaViewModel : ViewModel() {
     private var searchJob: Job? = null
     private var suggestJob: Job? = null
     private var spotifyImportJob: Job? = null
+    private var homeRefreshJob: Job? = null
 
     init {
-        refreshHome()
+        refreshHome(forceRefresh = false)
         if (authStore.isLoggedIn()) {
             refreshAccountLibrary()
         }
@@ -99,11 +104,34 @@ class NoctaliaViewModel : ViewModel() {
         _ui.update { it.copy(statusMessage = msg) }
     }
 
-    fun refreshHome() {
-        viewModelScope.launch {
+    fun refreshHome(forceRefresh: Boolean = false) {
+        if (!forceRefresh && (homeRefreshJob?.isActive == true || recommendations.hasFreshHomeCache())) {
+            return
+        }
+        homeRefreshJob?.cancel()
+        homeRefreshJob = viewModelScope.launch {
             _ui.update { it.copy(loadingHome = true) }
-            val tracks = api.search("top hits musica 2026", limit = 14)
-            _ui.update { it.copy(homeTracks = tracks, loadingHome = false) }
+            val recs = recommendations.buildHomeRecommendations(forceRefresh = forceRefresh)
+            _ui.update {
+                it.copy(
+                    homeRecommendations = recs,
+                    homeTracks = recs.forYouTracks,
+                    loadingHome = false,
+                )
+            }
+        }
+    }
+
+    fun playArtistMix(card: ArtistMixCard) {
+        showMessage("Creando Mix de ${card.artistName}...")
+        viewModelScope.launch {
+            val tracks = recommendations.buildArtistMix(card)
+            if (tracks.isEmpty()) {
+                showMessage("No se pudo crear el mix ahora mismo.")
+            } else {
+                player.playTrackList(tracks, 0)
+                showMessage("Mix de ${card.artistName} (${tracks.size} canciones)")
+            }
         }
     }
 

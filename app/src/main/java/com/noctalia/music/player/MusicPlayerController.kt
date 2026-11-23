@@ -18,6 +18,7 @@ import com.noctalia.music.data.LibraryRepository
 import com.noctalia.music.data.LyricsClient
 import com.noctalia.music.data.LyricsResult
 import com.noctalia.music.data.OfflineCacheManager
+import com.noctalia.music.data.RecommendationEngine
 import com.noctalia.music.data.SecurityValidators
 import com.noctalia.music.data.SkipSegment
 import com.noctalia.music.data.SponsorBlockClient
@@ -36,7 +37,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.guava.await
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlin.random.Random
 
 enum class RepeatMode { NONE, PLAYLIST, TRACK }
 
@@ -63,6 +63,7 @@ class MusicPlayerController(
     private val context: Context,
     private val api: YTMusicApi,
     private val library: LibraryRepository,
+    private val recommendations: RecommendationEngine,
     private val lyricsClient: LyricsClient,
     private val sponsorBlock: SponsorBlockClient,
     private val offlineCache: OfflineCacheManager,
@@ -99,9 +100,12 @@ class MusicPlayerController(
     private var prefetchJob: Job? = null
     private var fadeJob: Job? = null
     private var controllerConnectJob: Job? = null
+    private var smartShuffleFetchJob: Job? = null
 
     private val history = ArrayDeque<Track>()
     private val failedPreloadIds = HashSet<String>()
+    private val smartShufflePool = ArrayDeque<Track>()
+    private var smartShuffleTracksSinceInject: Int = 0
     private var retriedCurrent = false
     private var consecutiveAutoErrors = 0
     private var isFadingOutToPause = false
@@ -111,6 +115,7 @@ class MusicPlayerController(
     private var preEndSyncedForTrackId: String? = null
     private var plannedNextTrackId: String? = null
     private var countedPlayForTrackId: String? = null
+    private var completedRecordedForTrackId: String? = null
     private var listeningAccumMs: Long = 0L
     private var lastSnapshotSavedMs: Long = 0L
 
@@ -223,7 +228,10 @@ class MusicPlayerController(
             if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO ||
                 reason == Player.MEDIA_ITEM_TRANSITION_REASON_SEEK
             ) {
-                commitNativeTransition(mediaItem)
+                commitNativeTransition(
+                    mediaItem = mediaItem,
+                    isAutoCompletion = reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO,
+                )
             }
         }
 
@@ -513,7 +521,15 @@ class MusicPlayerController(
             }
             val existingPlanned = plannedNextTrackId?.let { id -> q.firstOrNull { it.id == id } }
             if (existingPlanned != null) return existingPlanned
-            val chosen = q[Random.nextInt(q.size)]
+            val recentArtistKeys = history.takeLast(2)
+                .map { recommendations.normalizeArtistKey(it.artist) }
+                .filter { it.isNotEmpty() }
+                .toSet()
+            val chosen = recommendations.pickWeightedShuffleNext(
+                queue = q,
+                currentTrack = st.currentTrack,
+                recentArtistKeys = recentArtistKeys,
+            )
             plannedNextTrackId = chosen.id
             return chosen
         }
@@ -670,7 +686,7 @@ class MusicPlayerController(
      * Ejecutado cuando ExoPlayer avanza nativamente a la canción precargada en índice 1
      * (con pantalla apagada o en segundo plano, sin interrumpir nunca Foreground ni notificación).
      */
-    private fun commitNativeTransition(mediaItem: MediaItem) {
+    private fun commitNativeTransition(mediaItem: MediaItem, isAutoCompletion: Boolean) {
         val newId = mediaItem.mediaId
         if (newId.isBlank() || newId == _state.value.currentTrack?.id) return
         playJob?.cancel()
@@ -702,6 +718,10 @@ class MusicPlayerController(
 
         val prev = st.currentTrack
         if (prev != null && prev.id != nextTrack.id) {
+            if (isAutoCompletion && completedRecordedForTrackId != prev.id) {
+                completedRecordedForTrackId = prev.id
+                library.recordTrackCompletion(prev)
+            }
             history.addLast(prev)
             while (history.size > 50) history.removeFirst()
         }
@@ -722,6 +742,9 @@ class MusicPlayerController(
                 } catch (_: Throwable) {
                 }
             }
+            if (_state.value.shuffle && _state.value.autoRadio) {
+                onShuffleTrackAdvanced(nextTrack)
+            }
             if (_state.value.autoRadio && _state.value.queue.isEmpty()) {
                 prefetchRadio(nextTrack.id, playImmediately = false)
             }
@@ -733,6 +756,7 @@ class MusicPlayerController(
         library.recordRecent(nextTrack)
         retriedCurrent = false
         countedPlayForTrackId = null
+        completedRecordedForTrackId = null
         listeningAccumMs = 0L
         activeSkipSegments = emptyList()
         skippedSegmentKeys.clear()
@@ -942,6 +966,15 @@ class MusicPlayerController(
                             listeningAccumMs = 0L
                         }
 
+                        // Aprender escucha completa al pasar del 75% de la canción
+                        if (dur >= 30_000L &&
+                            pos >= (dur * 3L) / 4L &&
+                            completedRecordedForTrackId != curTrack.id
+                        ) {
+                            completedRecordedForTrackId = curTrack.id
+                            library.recordTrackCompletion(curTrack)
+                        }
+
                         if (dur > 0L && (dur - pos) in 1L..25_000L && preEndSyncedForTrackId != curTrack.id) {
                             preEndSyncedForTrackId = curTrack.id
                             syncNextMediaItemInPlayer(alsoPrefetch = true)
@@ -988,6 +1021,7 @@ class MusicPlayerController(
         }
         if (prev?.id != clean.id) {
             countedPlayForTrackId = null
+            completedRecordedForTrackId = null
             listeningAccumMs = 0L
         }
         activeSkipSegments = emptyList()
@@ -1024,6 +1058,8 @@ class MusicPlayerController(
 
         if (_state.value.autoRadio && _state.value.queue.isEmpty()) {
             prefetchRadio(clean.id)
+        } else if (_state.value.shuffle && _state.value.autoRadio) {
+            ensureSmartShufflePool(clean)
         }
 
         isTransitioningNext = true
@@ -1159,12 +1195,39 @@ class MusicPlayerController(
     }
 
     fun skipNext(autoAdvance: Boolean = false) {
+        // Si el usuario salta manualmente muy pronto (entre 2s y 18s y < 30%), aprender el skip para evitar similares
+        if (!autoAdvance) {
+            val cur = _state.value.currentTrack
+            val p = activePlayer()
+            val pos = (p?.currentPosition ?: _state.value.positionMs).coerceAtLeast(0L)
+            val dur = p?.duration?.takeIf { it > 0 } ?: _state.value.durationMs
+            if (cur != null && pos in 2_000L..18_000L && (dur == 0L || pos < (dur * 3L) / 10L)) {
+                library.recordTrackSkip(cur)
+                // Si la siguiente canción en pool de Smart Shuffle era del mismo cantante saltado, renovarlo
+                val skippedArtist = recommendations.normalizeArtistKey(cur.artist)
+                if (skippedArtist.isNotEmpty()) {
+                    smartShufflePool.removeAll { recommendations.normalizeArtistKey(it.artist) == skippedArtist }
+                }
+            }
+        }
+
         val curQueue = _state.value.queue
         if (curQueue.isNotEmpty()) {
             val plannedIdx = plannedNextTrackId?.let { id -> curQueue.indexOfFirst { it.id == id } } ?: -1
             val idx = when {
                 plannedIdx in curQueue.indices -> plannedIdx
-                _state.value.shuffle -> Random.nextInt(curQueue.size)
+                _state.value.shuffle -> {
+                    val recentArtistKeys = history.takeLast(2)
+                        .map { recommendations.normalizeArtistKey(it.artist) }
+                        .filter { it.isNotEmpty() }
+                        .toSet()
+                    val picked = recommendations.pickWeightedShuffleNext(
+                        queue = curQueue,
+                        currentTrack = _state.value.currentTrack,
+                        recentArtistKeys = recentArtistKeys,
+                    )
+                    curQueue.indexOfFirst { it.id == picked.id }.takeIf { it >= 0 } ?: 0
+                }
                 else -> 0
             }
             val next = curQueue[idx]
@@ -1191,6 +1254,9 @@ class MusicPlayerController(
             val remaining = curQueue.toMutableList().apply { removeAt(idx) }
             plannedNextTrackId = null
             _state.update { it.copy(queue = remaining) }
+            if (_state.value.shuffle && _state.value.autoRadio) {
+                onShuffleTrackAdvanced(next)
+            }
             playTrack(next, pushHistory = true)
             return
         }
@@ -1363,8 +1429,67 @@ class MusicPlayerController(
 
     fun toggleShuffle() {
         plannedNextTrackId = null
-        _state.update { it.copy(shuffle = !it.shuffle) }
+        val nextShuffle = !_state.value.shuffle
+        _state.update { it.copy(shuffle = nextShuffle) }
+        if (nextShuffle && _state.value.autoRadio) {
+            smartShuffleTracksSinceInject = 1
+            _state.value.currentTrack?.let { ensureSmartShufflePool(it) }
+        }
         syncNextMediaItemInPlayer(alsoPrefetch = true)
+    }
+
+    /**
+     * Aleatorio Inteligente: cada 3 canciones mezcladas (si Auto-Radio está activo) intercala
+     * automáticamente una canción similar al cantante/estilo actual sin borrar tu cola.
+     */
+    private fun onShuffleTrackAdvanced(currentTrack: Track) {
+        smartShuffleTracksSinceInject++
+        ensureSmartShufflePool(currentTrack)
+        if (smartShuffleTracksSinceInject < 3) return
+
+        val existingIds = (
+            _state.value.queue.map { it.id } +
+                history.takeLast(15).map { it.id } +
+                currentTrack.id
+            ).toHashSet()
+
+        while (smartShufflePool.isNotEmpty()) {
+            val candidate = smartShufflePool.removeFirst()
+            if (candidate.id !in existingIds) {
+                smartShuffleTracksSinceInject = 0
+                plannedNextTrackId = candidate.id
+                _state.update { it.copy(queue = listOf(candidate) + it.queue) }
+                persistCurrentSnapshot()
+                break
+            }
+        }
+    }
+
+    private fun ensureSmartShufflePool(seedTrack: Track) {
+        if (smartShufflePool.size >= 3 || smartShuffleFetchJob?.isActive == true) return
+        smartShuffleFetchJob = scope.launch {
+            try {
+                val excluded = (
+                    _state.value.queue.map { it.id } +
+                        history.takeLast(15).map { it.id } +
+                        smartShufflePool.map { it.id } +
+                        seedTrack.id
+                    ).toHashSet()
+                val recs = recommendations.buildSmartRadioQueue(
+                    currentTrack = seedTrack,
+                    recentSessionTracks = history.toList(),
+                    excludedIds = excluded,
+                    limit = 10,
+                )
+                for (t in recs) {
+                    if (smartShufflePool.size >= 12) break
+                    if (smartShufflePool.none { it.id == t.id }) {
+                        smartShufflePool.addLast(t)
+                    }
+                }
+            } catch (_: Throwable) {
+            }
+        }
     }
 
     fun cycleRepeat() {
@@ -1409,9 +1534,25 @@ class MusicPlayerController(
         radioJob = scope.launch {
             try {
                 if (pendingPlayRadioWhenReady) _state.update { it.copy(isLoading = true) }
-                val radioTracks = api.getRadio(seedVideoId, limit = 20)
-                val existingIds = (_state.value.queue.map { it.id } + listOfNotNull(_state.value.currentTrack?.id)).toSet()
-                val fresh = radioTracks.filterNot { it.id in existingIds }.take(15)
+                val existingIds = (
+                    _state.value.queue.map { it.id } +
+                        history.takeLast(15).map { it.id } +
+                        listOfNotNull(_state.value.currentTrack?.id)
+                    ).toSet()
+                val seedTrack = _state.value.currentTrack?.takeIf { it.id == seedVideoId }
+                    ?: findTrackById(seedVideoId)
+                val fresh = if (seedTrack != null) {
+                    recommendations.buildSmartRadioQueue(
+                        currentTrack = seedTrack,
+                        recentSessionTracks = history.toList(),
+                        excludedIds = existingIds,
+                        limit = 16,
+                    )
+                } else {
+                    api.getRadio(seedVideoId, limit = 20)
+                        .filterNot { it.id in existingIds }
+                        .take(15)
+                }
                 val shouldPlayNow = pendingPlayRadioWhenReady
                 pendingPlayRadioWhenReady = false
                 if (fresh.isNotEmpty()) {

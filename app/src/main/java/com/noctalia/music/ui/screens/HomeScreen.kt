@@ -17,8 +17,10 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AccountCircle
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.CheckCircle
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -29,6 +31,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.noctalia.music.data.ArtistMixCard
 import com.noctalia.music.data.LibraryPayload
 import com.noctalia.music.data.RemotePlaylist
 import com.noctalia.music.data.Track
@@ -58,6 +61,8 @@ fun HomeScreen(
     library: LibraryPayload,
     onGenreClick: (String) -> Unit,
     onPlayTrack: (Track) -> Unit,
+    onPlayTrackList: (List<Track>, Int) -> Unit,
+    onPlayArtistMix: (ArtistMixCard) -> Unit,
     onAddQueue: (Track) -> Unit,
     onToggleFavorite: (Track) -> Unit,
     onMoreTrackClick: (Track) -> Unit,
@@ -197,6 +202,194 @@ fun HomeScreen(
             }
         }
 
+        // Carrusel «Hecho para ti» (Tu Mix Diario, Descubrimiento y Mixes de tus artistas)
+        val recs = ui.homeRecommendations
+        if (recs.personalized && (recs.forYouTracks.isNotEmpty() || recs.artistMixes.isNotEmpty())) {
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.AutoAwesome,
+                                contentDescription = null,
+                                tint = NoctaliaColors.CyanGlow,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Text(
+                                text = "Hecho para ti",
+                                color = NoctaliaColors.TextPrimary,
+                                fontSize = 17.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                            )
+                        }
+                        Text(
+                            text = "Aleatorio inteligente activo",
+                            color = NoctaliaColors.Cyan,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        if (recs.forYouTracks.isNotEmpty()) {
+                            item(key = "mix_daily") {
+                                NoctaliaGlassCard(
+                                    cornerRadius = 18.dp,
+                                    highlighted = true,
+                                    modifier = Modifier
+                                        .width(142.dp)
+                                        .bouncyClick(pressedScale = 0.96f) {
+                                            onPlayTrackList(recs.forYouTracks, 0)
+                                        },
+                                ) {
+                                    Column(modifier = Modifier.padding(8.dp)) {
+                                        TrackCoverImage(
+                                            url = recs.forYouTracks.first().thumb,
+                                            size = 126.dp,
+                                            cornerRadius = 12.dp,
+                                        )
+                                        Spacer(Modifier.height(8.dp))
+                                        Text(
+                                            text = "Tu Mix Diario",
+                                            color = NoctaliaColors.CyanGlow,
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        Text(
+                                            text = "${recs.forYouTracks.size} temas a tu estilo",
+                                            color = NoctaliaColors.TextMuted,
+                                            fontSize = 11.sp,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        if (recs.discoverTracks.isNotEmpty()) {
+                            item(key = "mix_discover") {
+                                NoctaliaGlassCard(
+                                    cornerRadius = 18.dp,
+                                    modifier = Modifier
+                                        .width(142.dp)
+                                        .bouncyClick(pressedScale = 0.96f) {
+                                            onPlayTrackList(recs.discoverTracks, 0)
+                                        },
+                                ) {
+                                    Column(modifier = Modifier.padding(8.dp)) {
+                                        TrackCoverImage(
+                                            url = recs.discoverTracks.first().thumb,
+                                            size = 126.dp,
+                                            cornerRadius = 12.dp,
+                                        )
+                                        Spacer(Modifier.height(8.dp))
+                                        Text(
+                                            text = "Descubrimiento",
+                                            color = NoctaliaColors.Magenta,
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        Text(
+                                            text = "${recs.discoverTracks.size} canciones nuevas",
+                                            color = NoctaliaColors.TextMuted,
+                                            fontSize = 11.sp,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        items(recs.artistMixes, key = { "artmix_${it.artistName}" }) { card ->
+                            NoctaliaGlassCard(
+                                cornerRadius = 18.dp,
+                                modifier = Modifier
+                                    .width(142.dp)
+                                    .bouncyClick(pressedScale = 0.96f) { onPlayArtistMix(card) },
+                            ) {
+                                Column(modifier = Modifier.padding(8.dp)) {
+                                    TrackCoverImage(url = card.coverUrl, size = 126.dp, cornerRadius = 12.dp)
+                                    Spacer(Modifier.height(8.dp))
+                                    Text(
+                                        text = "Mix de ${card.artistName}",
+                                        color = NoctaliaColors.TextPrimary,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        text = card.subtitle,
+                                        color = NoctaliaColors.TextMuted,
+                                        fontSize = 11.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Carrusel «Porque escuchas a [Artista]»
+        if (recs.becauseTitle.isNotEmpty() && recs.becauseTracks.isNotEmpty()) {
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = recs.becauseTitle,
+                        color = NoctaliaColors.TextPrimary,
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                    )
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        items(recs.becauseTracks, key = { "bec_${it.id}" }) { track ->
+                            NoctaliaGlassCard(
+                                cornerRadius = 16.dp,
+                                highlighted = player.currentTrack?.id == track.id,
+                                modifier = Modifier
+                                    .width(132.dp)
+                                    .bouncyClick(pressedScale = 0.96f) { onPlayTrack(track) },
+                            ) {
+                                Column(modifier = Modifier.padding(8.dp)) {
+                                    TrackCoverImage(url = track.thumb, size = 116.dp, cornerRadius = 11.dp)
+                                    Spacer(Modifier.height(6.dp))
+                                    Text(
+                                        text = track.title,
+                                        color = NoctaliaColors.TextPrimary,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        text = track.artist,
+                                        color = NoctaliaColors.TextMuted,
+                                        fontSize = 11.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Carrusel de playlists de tu cuenta de YouTube Music (si iniciaste sesión)
         if (ui.isLoggedIn && ui.accountPlaylists.isNotEmpty()) {
             item {
@@ -253,7 +446,15 @@ fun HomeScreen(
             }
         }
 
-        // Lista de recomendaciones / tendencias
+        // Lista principal: Recomendados personalizados para ti (o tendencias si aún no hay historial)
+        val feedTracks = if (recs.forYouTracks.isNotEmpty()) {
+            recs.forYouTracks
+        } else if (ui.accountHistory.isNotEmpty()) {
+            ui.accountHistory
+        } else {
+            ui.homeTracks
+        }
+
         item {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -261,21 +462,62 @@ fun HomeScreen(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    text = if (ui.accountHistory.isNotEmpty()) "Historial reciente de tu cuenta" else "Tendencias · Opus sin anuncios",
+                    text = if (recs.personalized) "Recomendados para ti" else "Tendencias · Opus sin anuncios",
                     color = NoctaliaColors.TextPrimary,
                     fontSize = 17.sp,
                     fontWeight = FontWeight.ExtraBold,
+                    modifier = Modifier.weight(1f),
                 )
-                Text(
-                    text = player.qualityLabel,
-                    color = NoctaliaColors.CyanGlow,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold,
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    if (feedTracks.isNotEmpty()) {
+                        Row(
+                            modifier = Modifier
+                                .clickable { onPlayTrackList(feedTracks, 0) }
+                                .padding(vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(3.dp),
+                        ) {
+                            Icon(
+                                Icons.Rounded.PlayArrow,
+                                contentDescription = "Reproducir todo",
+                                tint = NoctaliaColors.CyanGlow,
+                                modifier = Modifier.size(16.dp),
+                            )
+                            Text(
+                                text = "Todo",
+                                color = NoctaliaColors.CyanGlow,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                            )
+                        }
+                    }
+                    Row(
+                        modifier = Modifier
+                            .clickable(enabled = !ui.loadingHome, onClick = onRetryHome)
+                            .padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(3.dp),
+                    ) {
+                        Icon(
+                            Icons.Rounded.Refresh,
+                            contentDescription = "Actualizar recomendaciones",
+                            tint = NoctaliaColors.TextMuted,
+                            modifier = Modifier.size(15.dp),
+                        )
+                        Text(
+                            text = if (ui.loadingHome) "..." else "Renovar",
+                            color = NoctaliaColors.TextMuted,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                }
             }
         }
 
-        val feedTracks = if (ui.accountHistory.isNotEmpty()) ui.accountHistory else ui.homeTracks
         if (ui.loadingHome && feedTracks.isEmpty()) {
             item {
                 TrackListShimmer(count = 6)

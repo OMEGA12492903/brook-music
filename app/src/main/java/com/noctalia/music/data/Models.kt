@@ -41,6 +41,8 @@ data class TrackStat(
     @SerialName("play_count") val playCount: Int = 0,
     @SerialName("listened_sec") val listenedSec: Long = 0L,
     @SerialName("last_played_ms") val lastPlayedMs: Long = 0L,
+    @SerialName("skip_count") val skipCount: Int = 0,
+    @SerialName("complete_count") val completeCount: Int = 0,
 )
 
 @Serializable

@@ -190,6 +190,12 @@ private fun NoctaliaRootScreen(
         }
     }
 
+    LaunchedEffect(currentNav) {
+        if (currentNav == "home") {
+            vm.refreshHome(forceRefresh = false)
+        }
+    }
+
     // Exportar / Importar music_library.json compatible con Noctalia PC
     val exportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/json")
@@ -321,6 +327,8 @@ private fun NoctaliaRootScreen(
                         vm.onSearchQueryChanged(q, immediate = true)
                     },
                     onPlayTrack = { vm.player.playTrack(it) },
+                    onPlayTrackList = { list, idx -> vm.player.playTrackList(list, idx) },
+                    onPlayArtistMix = { vm.playArtistMix(it) },
                     onAddQueue = {
                         vm.player.addToQueue(it)
                         vm.showMessage("Añadida «${it.title}» a la cola")
@@ -340,7 +348,7 @@ private fun NoctaliaRootScreen(
                         currentNav = "library"
                         vm.openRemotePlaylist(pl)
                     },
-                    onRetryHome = { vm.refreshHome() },
+                    onRetryHome = { vm.refreshHome(forceRefresh = true) },
                 )
 
                 "search" -> SearchScreen(

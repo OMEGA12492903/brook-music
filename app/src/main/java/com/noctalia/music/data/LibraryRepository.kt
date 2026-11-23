@@ -78,6 +78,8 @@ class LibraryRepository(context: Context) {
                 playCount = st.playCount.coerceIn(0, 100_000),
                 listenedSec = st.listenedSec.coerceIn(0L, 10_000_000L),
                 lastPlayedMs = st.lastPlayedMs.coerceAtLeast(0L),
+                skipCount = st.skipCount.coerceIn(0, 100_000),
+                completeCount = st.completeCount.coerceIn(0, 100_000),
             )
         }
         val cleanSnap = raw.lastSession?.let { snap ->
@@ -278,12 +280,68 @@ class LibraryRepository(context: Context) {
             playCount = ((existing?.playCount ?: 0) + if (incrementPlayCount) 1 else 0).coerceAtMost(100_000),
             listenedSec = ((existing?.listenedSec ?: 0L) + addSeconds.coerceIn(0L, 600L)).coerceAtMost(10_000_000L),
             lastPlayedMs = System.currentTimeMillis(),
+            skipCount = existing?.skipCount ?: 0,
+            completeCount = existing?.completeCount ?: 0,
         )
         nextStats[clean.id] = updated
         // Mantener tope de 500 pistas ordenando por uso si se supera
         val bounded = if (nextStats.size > MAX_STATS) {
             nextStats.entries
                 .sortedByDescending { it.value.listenedSec * 2 + it.value.playCount * 30L }
+                .take(MAX_STATS)
+                .associateTo(LinkedHashMap()) { it.key to it.value }
+        } else {
+            nextStats
+        }
+        persist(cur.copy(stats = bounded))
+    }
+
+    /**
+     * Registra un salto rápido (< 18 s) para que el algoritmo local penalice canciones/estilos no deseados.
+     */
+    fun recordTrackSkip(track: Track) {
+        val clean = SecurityValidators.sanitizeTrack(track) ?: return
+        val cur = _state.value
+        val nextStats = LinkedHashMap(cur.stats)
+        val existing = nextStats[clean.id]
+        nextStats[clean.id] = TrackStat(
+            track = clean,
+            playCount = existing?.playCount ?: 0,
+            listenedSec = existing?.listenedSec ?: 0L,
+            lastPlayedMs = existing?.lastPlayedMs ?: System.currentTimeMillis(),
+            skipCount = ((existing?.skipCount ?: 0) + 1).coerceAtMost(100_000),
+            completeCount = existing?.completeCount ?: 0,
+        )
+        val bounded = if (nextStats.size > MAX_STATS) {
+            nextStats.entries
+                .sortedByDescending { it.value.listenedSec * 2 + it.value.playCount * 30L + it.value.skipCount * 5L }
+                .take(MAX_STATS)
+                .associateTo(LinkedHashMap()) { it.key to it.value }
+        } else {
+            nextStats
+        }
+        persist(cur.copy(stats = bounded))
+    }
+
+    /**
+     * Registra una escucha completa (>= 75% o fin natural) para reforzar la afinidad con ese artista/estilo.
+     */
+    fun recordTrackCompletion(track: Track) {
+        val clean = SecurityValidators.sanitizeTrack(track) ?: return
+        val cur = _state.value
+        val nextStats = LinkedHashMap(cur.stats)
+        val existing = nextStats[clean.id]
+        nextStats[clean.id] = TrackStat(
+            track = clean,
+            playCount = maxOf(existing?.playCount ?: 0, 1),
+            listenedSec = existing?.listenedSec ?: 0L,
+            lastPlayedMs = System.currentTimeMillis(),
+            skipCount = existing?.skipCount ?: 0,
+            completeCount = ((existing?.completeCount ?: 0) + 1).coerceAtMost(100_000),
+        )
+        val bounded = if (nextStats.size > MAX_STATS) {
+            nextStats.entries
+                .sortedByDescending { it.value.listenedSec * 2 + it.value.playCount * 30L + it.value.completeCount * 40L }
                 .take(MAX_STATS)
                 .associateTo(LinkedHashMap()) { it.key to it.value }
         } else {
@@ -341,6 +399,8 @@ class LibraryRepository(context: Context) {
                 playCount = maxOf(existing?.playCount ?: 0, rStat.playCount.coerceIn(0, 100_000)),
                 listenedSec = maxOf(existing?.listenedSec ?: 0L, rStat.listenedSec.coerceIn(0L, 10_000_000L)),
                 lastPlayedMs = maxOf(existing?.lastPlayedMs ?: 0L, rStat.lastPlayedMs.coerceAtLeast(0L)),
+                skipCount = maxOf(existing?.skipCount ?: 0, rStat.skipCount.coerceIn(0, 100_000)),
+                completeCount = maxOf(existing?.completeCount ?: 0, rStat.completeCount.coerceIn(0, 100_000)),
             )
         }
         val boundedStats = if (mergedStats.size > MAX_STATS) {
