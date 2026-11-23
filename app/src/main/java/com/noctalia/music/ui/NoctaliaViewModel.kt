@@ -45,6 +45,7 @@ data class MainUiState(
     val isSpotifyLoggedIn: Boolean = false,
     val loadingSpotify: Boolean = false,
     val spotifyPlaylists: List<SpotifyRemotePlaylist> = emptyList(),
+    val spotifyError: String? = null,
     val spotifyImport: SpotifyImportProgress = SpotifyImportProgress(),
     val homeTracks: List<Track> = emptyList(),
     val homeRecommendations: HomeRecommendations = HomeRecommendations(),
@@ -595,6 +596,7 @@ class NoctaliaViewModel : ViewModel() {
         _ui.update {
             it.copy(
                 isSpotifyLoggedIn = true,
+                spotifyError = null,
                 statusMessage = "Cuenta Spotify conectada. Cargando tus playlists...",
             )
         }
@@ -609,6 +611,7 @@ class NoctaliaViewModel : ViewModel() {
                 isSpotifyLoggedIn = false,
                 loadingSpotify = false,
                 spotifyPlaylists = emptyList(),
+                spotifyError = null,
                 spotifyImport = SpotifyImportProgress(),
                 statusMessage = "Sesión de Spotify cerrada.",
             )
@@ -618,10 +621,10 @@ class NoctaliaViewModel : ViewModel() {
     fun refreshSpotifyAccount(silent: Boolean = false) {
         if (!authStore.isSpotifyLoggedIn()) return
         viewModelScope.launch {
-            _ui.update { it.copy(loadingSpotify = true) }
+            _ui.update { it.copy(loadingSpotify = true, spotifyError = null) }
             val res = spotify.fetchAccountPlaylists()
             res.onSuccess { list ->
-                _ui.update { it.copy(spotifyPlaylists = list, loadingSpotify = false) }
+                _ui.update { it.copy(spotifyPlaylists = list, loadingSpotify = false, spotifyError = null) }
                 if (!silent) {
                     val plCount = (list.size - 1).coerceAtLeast(0)
                     showMessage(
@@ -630,9 +633,10 @@ class NoctaliaViewModel : ViewModel() {
                     )
                 }
             }.onFailure { err ->
-                _ui.update { it.copy(loadingSpotify = false) }
+                val msg = err.message ?: "No se pudieron cargar tus listas de Spotify."
+                _ui.update { it.copy(loadingSpotify = false, spotifyError = msg) }
                 if (!silent) {
-                    showMessage(err.message ?: "No se pudieron cargar tus listas de Spotify.")
+                    showMessage(msg)
                 }
             }
         }
