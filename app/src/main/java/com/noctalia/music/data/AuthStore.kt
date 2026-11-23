@@ -153,12 +153,13 @@ class AuthStore(private val context: Context) {
         private const val KEY_SPOTIFY_CLIENT_TOKEN = "sp_client_token"
         private val CONTROL_CHARS_RE = Regex("[\\r\\n\\u0000-\\u001F\\u007F]")
         private val COOKIE_NAME_RE = Regex("^[A-Za-z0-9_.-]{1,64}$")
-        private val SPOTIFY_TOKEN_RE = Regex("^[A-Za-z0-9._~+/=-]{20,2048}$")
+        private val BEARER_PREFIX_RE = Regex("^bearer\\s+", RegexOption.IGNORE_CASE)
+        private val SPOTIFY_TOKEN_RE = Regex("^[A-Za-z0-9._~+/=:-]{20,4096}$")
 
         fun sanitizeSpotifyToken(raw: String?): String? {
             val clean = raw
-                ?.removePrefix("Bearer ")
-                ?.removePrefix("bearer ")
+                ?.trim()
+                ?.replaceFirst(BEARER_PREFIX_RE, "")
                 ?.replace(CONTROL_CHARS_RE, "")
                 ?.trim()
                 ?: return null

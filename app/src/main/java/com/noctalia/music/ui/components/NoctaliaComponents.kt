@@ -75,6 +75,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -364,6 +365,7 @@ fun TrackRowItem(
     // Gesto de deslizar hacia la derecha para añadir a la cola (estilo Spotify)
     var dragRaw by remember { mutableFloatStateOf(0f) }
     var isDragging by remember { mutableStateOf(false) }
+    val currentOnAddQueue by rememberUpdatedState(onAddQueue)
     val swipeOffset by animateFloatAsState(
         targetValue = if (isDragging) dragRaw else 0f,
         animationSpec = spring(dampingRatio = 0.68f, stiffness = 420f),
@@ -384,7 +386,7 @@ fun TrackRowItem(
                     val triggered = dragRaw > 110f
                     isDragging = false
                     dragRaw = 0f
-                    if (triggered) onAddQueue()
+                    if (triggered) currentOnAddQueue?.invoke()
                 },
                 onDragCancel = {
                     isDragging = false

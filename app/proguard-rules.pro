@@ -17,3 +17,8 @@
 -keep class com.noctalia.music.widget.BrookWidgetProvider { *; }
 -keep class com.noctalia.music.widget.BrookWidgetActionReceiver { *; }
 -keep class com.noctalia.music.player.NoctaliaPlaybackService { *; }
+-keepattributes JavascriptInterface
+-keep class com.noctalia.music.ui.screens.SpotifyTokenJsBridge { *; }
+-keepclassmembers class * {
+    @android.webkit.JavascriptInterface <methods>;
+}

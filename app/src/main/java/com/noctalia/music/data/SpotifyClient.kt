@@ -302,36 +302,52 @@ class SpotifyClient(
             ?: return Result.failure(SecurityException("Conecta primero tu cuenta Spotify."))
         val clientToken = authStore.getSpotifyClientToken()
 
-        val reqBuilder = Request.Builder()
-            .url(url)
-            .header("Authorization", "Bearer $bearer")
-            .header("User-Agent", DESKTOP_UA)
-            .header("Origin", "https://open.spotify.com")
-            .header("Referer", "https://open.spotify.com/")
-            .header("Accept", "application/json")
-            .get()
-        if (!clientToken.isNullOrBlank()) {
-            reqBuilder.header("client-token", clientToken)
-        }
-
-        return try {
-            authClient.newCall(reqBuilder.build()).execute().use { resp ->
-                when (resp.code) {
-                    in 200..299 -> {
-                        val txt = readBounded(resp)
-                            ?: return Result.failure(IOException("Respuesta demasiado grande."))
-                        Result.success(json.parseToJsonElement(txt).jsonObject)
-                    }
-                    401, 403 -> Result.failure(
-                        SecurityException("Sesión de Spotify caducada. Pulsa «Reconectar Spotify».")
-                    )
-                    429 -> Result.failure(IOException("Spotify pidió esperar unos segundos (límite de peticiones)."))
-                    else -> Result.failure(IOException("Spotify devolvió HTTP ${resp.code}."))
+        fun executeRequest(includeWebPlayerHeaders: Boolean): Result<JsonObject> {
+            val reqBuilder = Request.Builder()
+                .url(url)
+                .header("Authorization", "Bearer $bearer")
+                .header("User-Agent", DESKTOP_UA)
+                .header("Origin", "https://open.spotify.com")
+                .header("Referer", "https://open.spotify.com/")
+                .header("Accept", "application/json")
+                .get()
+            if (includeWebPlayerHeaders) {
+                reqBuilder.header("app-platform", "WebPlayer")
+                if (!clientToken.isNullOrBlank()) {
+                    reqBuilder.header("client-token", clientToken)
                 }
             }
-        } catch (e: Exception) {
-            Result.failure(IOException("No se pudo conectar con Spotify (${e.message?.take(45) ?: "red"})."))
+            return try {
+                authClient.newCall(reqBuilder.build()).execute().use { resp ->
+                    when (resp.code) {
+                        in 200..299 -> {
+                            val txt = readBounded(resp)
+                                ?: return Result.failure(IOException("Respuesta demasiado grande."))
+                            Result.success(json.parseToJsonElement(txt).jsonObject)
+                        }
+                        401 -> Result.failure(
+                            SecurityException("Sesión de Spotify caducada. Pulsa «Reconectar».")
+                        )
+                        403 -> Result.failure(
+                            SecurityException("Spotify denegó el acceso (403). Pulsa «Reconectar» o importa la lista por enlace.")
+                        )
+                        429 -> Result.failure(IOException("Spotify pidió esperar unos segundos (límite de peticiones)."))
+                        else -> Result.failure(IOException("Spotify devolvió HTTP ${resp.code}."))
+                    }
+                }
+            } catch (e: Exception) {
+                Result.failure(IOException("No se pudo conectar con Spotify (${e.message?.take(45) ?: "red"})."))
+            }
         }
+
+        val first = executeRequest(includeWebPlayerHeaders = true)
+        if (first.isSuccess) return first
+        // Si falló con 401/403 enviando `client-token` / `app-platform`, reintentar una vez solo con Bearer
+        if (first.exceptionOrNull() is SecurityException) {
+            val retry = executeRequest(includeWebPlayerHeaders = false)
+            if (retry.isSuccess) return retry
+        }
+        return first
     }
 
     suspend fun fetchAccountPlaylists(): Result<List<SpotifyRemotePlaylist>> = withContext(Dispatchers.IO) {
@@ -410,7 +426,8 @@ class SpotifyClient(
             }
             val root = res.getOrThrow()
             for (el in root.spArr("items").orEmpty()) {
-                val tr = el.asSpObj()?.spObj("track") ?: el.asSpObj()?.spObj("item") ?: continue
+                val o = el.asSpObj() ?: continue
+                val tr = o.spObj("item") ?: o.spObj("track") ?: continue
                 parseApiTrackObject(tr)?.let { seeds.add(it) }
                 if (seeds.size >= MAX_IMPORT_TRACKS) break
             }
@@ -446,11 +463,19 @@ class SpotifyClient(
             .orEmpty()
 
         val seeds = mutableListOf<SpotifyTrackSeed>()
-        var nextUrl: String? = "https://api.spotify.com/v1/playlists/$playlistId/tracks?limit=100"
+        // Spotify migró en 2026 de `/tracks` a `/items`; probar primero `/items` y respaldar con `/tracks`
+        var nextUrl: String? = "https://api.spotify.com/v1/playlists/$playlistId/items?limit=100"
         var pages = 0
 
         while (nextUrl != null && pages < 4 && seeds.size < MAX_IMPORT_TRACKS) {
-            val res = authGetJson(nextUrl)
+            var res = authGetJson(nextUrl)
+            if (res.isFailure && pages == 0 && nextUrl.contains("/items?")) {
+                val legacyUrl = "https://api.spotify.com/v1/playlists/$playlistId/tracks?limit=100"
+                val legacyRes = authGetJson(legacyUrl)
+                if (legacyRes.isSuccess) {
+                    res = legacyRes
+                }
+            }
             if (res.isFailure) {
                 if (pages == 0) return Result.failure(res.exceptionOrNull()!!)
                 break
@@ -458,7 +483,7 @@ class SpotifyClient(
             val root = res.getOrThrow()
             for (el in root.spArr("items").orEmpty()) {
                 val o = el.asSpObj() ?: continue
-                val tr = o.spObj("track") ?: o.spObj("item") ?: continue
+                val tr = o.spObj("item") ?: o.spObj("track") ?: continue
                 parseApiTrackObject(tr)?.let { seeds.add(it) }
                 if (seeds.size >= MAX_IMPORT_TRACKS) break
             }
@@ -482,6 +507,7 @@ class SpotifyClient(
     }
 
     private fun parseApiTrackObject(tr: JsonObject): SpotifyTrackSeed? {
+        if (tr.spStr("type").equals("episode", ignoreCase = true)) return null
         val name = cleanText(tr.spStr("name"))
         if (name.isEmpty()) return null
         val artists = tr.spArr("artists")

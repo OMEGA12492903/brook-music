@@ -384,6 +384,13 @@ class NoctaliaViewModel : ViewModel() {
             val res = spotify.fetchAccountPlaylists()
             res.onSuccess { list ->
                 _ui.update { it.copy(spotifyPlaylists = list, loadingSpotify = false) }
+                if (!silent) {
+                    val plCount = (list.size - 1).coerceAtLeast(0)
+                    showMessage(
+                        if (plCount > 0) "Spotify listo: $plCount playlists y Me gusta cargados."
+                        else "Spotify conectado · Canciones que te gustan disponible."
+                    )
+                }
             }.onFailure { err ->
                 _ui.update { it.copy(loadingSpotify = false) }
                 if (!silent) {

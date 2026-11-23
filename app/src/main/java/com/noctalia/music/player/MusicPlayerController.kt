@@ -48,6 +48,7 @@ data class PlayerUiState(
     val durationMs: Long = 0L,
     val qualityLabel: String = "OPUS 160k",
     val queue: List<Track> = emptyList(),
+    val manualQueueCount: Int = 0,
     val shuffle: Boolean = false,
     val repeatMode: RepeatMode = RepeatMode.NONE,
     val autoRadio: Boolean = true,
@@ -106,6 +107,8 @@ class MusicPlayerController(
     private val failedPreloadIds = HashSet<String>()
     private val smartShufflePool = ArrayDeque<Track>()
     private var smartShuffleTracksSinceInject: Int = 0
+    // Número de canciones al inicio de `queue` añadidas manualmente por el usuario (cola prioritaria estilo Spotify)
+    private var manualQueueCount: Int = 0
     private var retriedCurrent = false
     private var consecutiveAutoErrors = 0
     private var isFadingOutToPause = false
@@ -387,12 +390,16 @@ class MusicPlayerController(
                 val st = _state.value
                 val qIdx = st.queue.indexOfFirst { it.id == targetTrack.id }
                 val updatedQueue = if (qIdx >= 0) {
+                    if (qIdx < manualQueueCount) {
+                        manualQueueCount = (manualQueueCount - 1).coerceAtLeast(0)
+                    }
                     st.queue.toMutableList().apply { removeAt(qIdx) }
                 } else {
                     val hIdx = history.indexOfFirst { it.id == targetTrack.id }
                     if (hIdx >= 0) history.removeAt(hIdx)
                     st.queue
                 }
+                manualQueueCount = manualQueueCount.coerceIn(0, updatedQueue.size)
                 if (cur != null && cur.id != targetTrack.id) {
                     history.addLast(cur)
                     while (history.size > 50) history.removeFirst()
@@ -481,6 +488,12 @@ class MusicPlayerController(
         library.updateSmoothFade(enabled)
     }
 
+    private fun updateQueueState(newQueue: List<Track>, newManualCount: Int) {
+        val clamped = newManualCount.coerceIn(0, newQueue.size)
+        manualQueueCount = clamped
+        _state.update { it.copy(queue = newQueue, manualQueueCount = clamped) }
+    }
+
     private fun persistCurrentSnapshot() {
         val st = _state.value
         val cur = st.currentTrack ?: return
@@ -505,6 +518,7 @@ class MusicPlayerController(
     /**
      * Calcula qué canción debe ir precargada en el índice 1 de ExoPlayer para transición sin cortes.
      * Devuelve `null` si está activo Temporizador "Al acabar" o Repetir canción (que usa REPEAT_MODE_ONE nativo).
+     * Respeta siempre primero la cola manual del usuario (`manualQueueCount > 0`), incluso con Aleatorio activo.
      */
     private fun computeNextTrackForPreload(): Track? {
         val st = _state.value
@@ -514,7 +528,8 @@ class MusicPlayerController(
         }
         val q = st.queue
         if (q.isNotEmpty()) {
-            if (!st.shuffle) {
+            val effectiveManual = manualQueueCount.coerceIn(0, q.size)
+            if (effectiveManual > 0 || !st.shuffle) {
                 val first = q.first()
                 plannedNextTrackId = first.id
                 return first
@@ -699,6 +714,10 @@ class MusicPlayerController(
         if (qIdx >= 0) {
             nextTrack = st.queue[qIdx]
             updatedQueue = st.queue.toMutableList().apply { removeAt(qIdx) }
+            if (qIdx < manualQueueCount) {
+                manualQueueCount = (manualQueueCount - 1).coerceAtLeast(0)
+            }
+            manualQueueCount = manualQueueCount.coerceIn(0, updatedQueue.size)
         } else {
             val hIdx = history.indexOfFirst { it.id == newId }
             if (hIdx >= 0) {
@@ -714,6 +733,7 @@ class MusicPlayerController(
                 )
             }
             updatedQueue = st.queue
+            manualQueueCount = manualQueueCount.coerceIn(0, updatedQueue.size)
         }
 
         val prev = st.currentTrack
@@ -742,7 +762,7 @@ class MusicPlayerController(
                 } catch (_: Throwable) {
                 }
             }
-            if (_state.value.shuffle && _state.value.autoRadio) {
+            if (_state.value.shuffle && _state.value.autoRadio && manualQueueCount == 0) {
                 onShuffleTrackAdvanced(nextTrack)
             }
             if (_state.value.autoRadio && _state.value.queue.isEmpty()) {
@@ -773,9 +793,13 @@ class MusicPlayerController(
         val dur = p?.duration?.takeIf { it > 0 } ?: (nextTrack.duration * 1000L)
 
         _state.update { cur ->
+            val finalQueue = updatedQueue ?: cur.queue
+            val clampedManual = manualQueueCount.coerceIn(0, finalQueue.size)
+            manualQueueCount = clampedManual
             cur.copy(
                 currentTrack = nextTrack,
-                queue = updatedQueue ?: cur.queue,
+                queue = finalQueue,
+                manualQueueCount = clampedManual,
                 isLoading = p?.playbackState == Player.STATE_BUFFERING,
                 positionMs = 0L,
                 durationMs = dur,
@@ -1146,12 +1170,16 @@ class MusicPlayerController(
         val rest = clean.drop(idx + 1)
         resetSmartShufflePool()
         plannedNextTrackId = null
-        _state.update { it.copy(queue = rest) }
+        updateQueueState(rest, 0)
         playTrack(selected, pushHistory = true)
     }
 
     fun togglePlayPause() {
         if (_state.value.currentTrack == null) {
+            if (_state.value.queue.isNotEmpty()) {
+                playFromQueue(0)
+                return
+            }
             val rec = library.state.value.recent.firstOrNull()
             if (rec != null) playTrack(rec, pushHistory = false)
             return
@@ -1214,8 +1242,10 @@ class MusicPlayerController(
 
         val curQueue = _state.value.queue
         if (curQueue.isNotEmpty()) {
+            val effectiveManual = manualQueueCount.coerceIn(0, curQueue.size)
             val plannedIdx = plannedNextTrackId?.let { id -> curQueue.indexOfFirst { it.id == id } } ?: -1
             val idx = when {
+                effectiveManual > 0 -> 0
                 plannedIdx in curQueue.indices -> plannedIdx
                 _state.value.shuffle -> {
                     val recentArtistKeys = history.takeLast(2)
@@ -1253,9 +1283,10 @@ class MusicPlayerController(
             }
 
             val remaining = curQueue.toMutableList().apply { removeAt(idx) }
+            val nextManual = if (idx < effectiveManual) effectiveManual - 1 else effectiveManual
             plannedNextTrackId = null
-            _state.update { it.copy(queue = remaining) }
-            if (_state.value.shuffle && _state.value.autoRadio) {
+            updateQueueState(remaining, nextManual)
+            if (_state.value.shuffle && _state.value.autoRadio && manualQueueCount == 0) {
                 onShuffleTrackAdvanced(next)
             }
             playTrack(next, pushHistory = true)
@@ -1294,7 +1325,8 @@ class MusicPlayerController(
             val cur = _state.value.currentTrack
             if (cur != null) {
                 plannedNextTrackId = cur.id
-                _state.update { it.copy(queue = listOf(cur) + it.queue) }
+                val nextManual = if (manualQueueCount > 0) manualQueueCount + 1 else 0
+                updateQueueState(listOf(cur) + _state.value.queue, nextManual)
             }
             playTrack(prev, pushHistory = false)
         } else {
@@ -1354,20 +1386,48 @@ class MusicPlayerController(
         syncNextMediaItemInPlayer(alsoPrefetch = true)
     }
 
+    /**
+     * Cola prioritaria estilo Spotify: añade la canción justo al final de las canciones que pusiste
+     * manualmente en cola (antes de Auto-Radio y antes del resto de la playlist, respetando FIFO
+     * e ignorando Aleatorio hasta que suenen tus canciones encoladas).
+     */
     fun addToQueue(track: Track) {
         val clean = SecurityValidators.sanitizeTrack(track) ?: return
-        _state.update { it.copy(queue = it.queue + clean) }
+        failedPreloadIds.remove(clean.id)
+        val curQueue = _state.value.queue
+        val curManual = manualQueueCount.coerceIn(0, curQueue.size)
+        val existingIdx = curQueue.indexOfFirst { it.id == clean.id }
+        val baseManual = if (existingIdx in 0 until curManual) curManual - 1 else curManual
+        val filtered = if (existingIdx >= 0) {
+            curQueue.filterNot { it.id == clean.id }
+        } else {
+            curQueue
+        }
+        val insertIdx = baseManual.coerceIn(0, filtered.size)
+        val updated = filtered.toMutableList().apply { add(insertIdx, clean) }
+        val nextManual = (baseManual + 1).coerceIn(1, updated.size)
+        plannedNextTrackId = updated.first().id
+        updateQueueState(updated, nextManual)
         persistCurrentSnapshot()
         syncNextMediaItemInPlayer(alsoPrefetch = true)
     }
 
     fun addPlayNext(track: Track) {
         val clean = SecurityValidators.sanitizeTrack(track) ?: return
-        plannedNextTrackId = clean.id
-        _state.update { st ->
-            val filtered = st.queue.filterNot { it.id == clean.id }
-            st.copy(queue = listOf(clean) + filtered)
+        failedPreloadIds.remove(clean.id)
+        val curQueue = _state.value.queue
+        val curManual = manualQueueCount.coerceIn(0, curQueue.size)
+        val existingIdx = curQueue.indexOfFirst { it.id == clean.id }
+        val baseManual = if (existingIdx in 0 until curManual) curManual - 1 else curManual
+        val filtered = if (existingIdx >= 0) {
+            curQueue.filterNot { it.id == clean.id }
+        } else {
+            curQueue
         }
+        val updated = listOf(clean) + filtered
+        val nextManual = (baseManual + 1).coerceIn(1, updated.size)
+        plannedNextTrackId = clean.id
+        updateQueueState(updated, nextManual)
         persistCurrentSnapshot()
         syncNextMediaItemInPlayer(alsoPrefetch = true)
     }
@@ -1375,13 +1435,19 @@ class MusicPlayerController(
     fun moveQueueItem(fromIndex: Int, toIndex: Int) {
         val curQueue = _state.value.queue
         if (fromIndex !in curQueue.indices || toIndex !in curQueue.indices || fromIndex == toIndex) return
+        val curManual = manualQueueCount.coerceIn(0, curQueue.size)
         val updated = curQueue.toMutableList()
         val moved = updated.removeAt(fromIndex)
         updated.add(toIndex, moved)
+        val nextManual = when {
+            fromIndex < curManual && toIndex >= curManual -> curManual - 1
+            fromIndex >= curManual && toIndex < curManual -> curManual + 1
+            else -> curManual
+        }
         if (fromIndex == 0 || toIndex == 0) {
             plannedNextTrackId = null
         }
-        _state.update { it.copy(queue = updated) }
+        updateQueueState(updated, nextManual)
         persistCurrentSnapshot()
         if (fromIndex == 0 || toIndex == 0) {
             syncNextMediaItemInPlayer(alsoPrefetch = true)
@@ -1394,7 +1460,7 @@ class MusicPlayerController(
         resetSmartShufflePool()
         pendingPlayRadioWhenReady = false
         plannedNextTrackId = null
-        _state.update { it.copy(queue = emptyList()) }
+        updateQueueState(emptyList(), 0)
         playTrack(clean, pushHistory = true)
         prefetchRadio(clean.id, playImmediately = false)
     }
@@ -1402,20 +1468,24 @@ class MusicPlayerController(
     fun playFromQueue(index: Int) {
         val curQueue = _state.value.queue
         if (index !in curQueue.indices) return
+        val curManual = manualQueueCount.coerceIn(0, curQueue.size)
         val chosen = curQueue[index]
         val rest = curQueue.toMutableList().apply { removeAt(index) }
+        val nextManual = if (index < curManual) curManual - 1 else curManual
         plannedNextTrackId = null
-        _state.update { it.copy(queue = rest) }
+        updateQueueState(rest, nextManual)
         playTrack(chosen, pushHistory = true)
     }
 
     fun removeFromQueue(index: Int) {
         val curQueue = _state.value.queue
         if (index !in curQueue.indices) return
+        val curManual = manualQueueCount.coerceIn(0, curQueue.size)
         val removed = curQueue[index]
         val rest = curQueue.toMutableList().apply { removeAt(index) }
+        val nextManual = if (index < curManual) curManual - 1 else curManual
         if (removed.id == plannedNextTrackId) plannedNextTrackId = null
-        _state.update { it.copy(queue = rest) }
+        updateQueueState(rest, nextManual)
         persistCurrentSnapshot()
         if (index == 0 || removed.id == prefetchedTrackId) {
             syncNextMediaItemInPlayer(alsoPrefetch = true)
@@ -1425,7 +1495,7 @@ class MusicPlayerController(
     fun clearQueue() {
         resetSmartShufflePool()
         plannedNextTrackId = null
-        _state.update { it.copy(queue = emptyList()) }
+        updateQueueState(emptyList(), 0)
         persistCurrentSnapshot()
         syncNextMediaItemInPlayer(alsoPrefetch = false)
     }
@@ -1453,8 +1523,10 @@ class MusicPlayerController(
     /**
      * Aleatorio Inteligente: cada 3 canciones mezcladas (si Auto-Radio está activo) intercala
      * automáticamente una canción similar al cantante/estilo actual sin borrar tu cola.
+     * Nunca interrumpe canciones añadidas manualmente a la cola.
      */
     private fun onShuffleTrackAdvanced(currentTrack: Track) {
+        if (manualQueueCount > 0) return
         smartShuffleTracksSinceInject++
         ensureSmartShufflePool(currentTrack)
         if (smartShuffleTracksSinceInject < 3) return
@@ -1470,7 +1542,7 @@ class MusicPlayerController(
             if (candidate.id !in existingIds) {
                 smartShuffleTracksSinceInject = 0
                 plannedNextTrackId = candidate.id
-                _state.update { it.copy(queue = listOf(candidate) + it.queue) }
+                updateQueueState(listOf(candidate) + _state.value.queue, manualQueueCount)
                 persistCurrentSnapshot()
                 break
             }
@@ -1569,11 +1641,24 @@ class MusicPlayerController(
                 pendingPlayRadioWhenReady = false
                 if (fresh.isNotEmpty()) {
                     if (shouldPlayNow) {
-                        plannedNextTrackId = null
-                        _state.update { it.copy(queue = it.queue + fresh.drop(1)) }
-                        playTrack(fresh.first(), pushHistory = true)
+                        val curQ = _state.value.queue
+                        if (curQ.isNotEmpty()) {
+                            // Si el usuario encoló una canción mientras cargaba la radio, priorizar la suya
+                            val userNext = curQ.first()
+                            val rest = curQ.drop(1) + fresh.filterNot { f -> curQ.any { it.id == f.id } }
+                            val nextManual = if (manualQueueCount > 0) manualQueueCount - 1 else 0
+                            plannedNextTrackId = null
+                            updateQueueState(rest, nextManual)
+                            playTrack(userNext, pushHistory = true)
+                        } else {
+                            plannedNextTrackId = null
+                            updateQueueState(fresh.drop(1), 0)
+                            playTrack(fresh.first(), pushHistory = true)
+                        }
                     } else {
-                        _state.update { it.copy(queue = it.queue + fresh) }
+                        val curQ = _state.value.queue
+                        val dedupFresh = fresh.filterNot { f -> curQ.any { it.id == f.id } }
+                        updateQueueState(curQ + dedupFresh, manualQueueCount)
                         persistCurrentSnapshot()
                         syncNextMediaItemInPlayer(alsoPrefetch = true)
                     }

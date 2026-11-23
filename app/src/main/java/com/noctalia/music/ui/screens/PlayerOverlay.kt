@@ -624,21 +624,59 @@ fun FullPlayerOverlay(
                             }
                         }
 
+                        val manualCount = player.manualQueueCount.coerceIn(0, player.queue.size)
+                        val manualItems = remember(player.queue, manualCount) { player.queue.take(manualCount) }
+                        val autoItems = remember(player.queue, manualCount) { player.queue.drop(manualCount) }
                         LazyColumn(
                             modifier = Modifier.weight(1f),
                             contentPadding = PaddingValues(bottom = 12.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            itemsIndexed(player.queue, key = { idx, t -> "q_${idx}_${t.id}" }) { idx, qTrack ->
+                            if (manualItems.isNotEmpty()) {
+                                item(key = "hdr_manual_queue") {
+                                    Text(
+                                        text = "En tu cola (${manualItems.size}) · Suena primero",
+                                        color = NoctaliaColors.CyanGlow,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        modifier = Modifier.padding(top = 2.dp, bottom = 2.dp),
+                                    )
+                                }
+                                itemsIndexed(manualItems, key = { idx, t -> "qm_${idx}_${t.id}" }) { idx, qTrack ->
+                                    TrackRowItem(
+                                        track = qTrack,
+                                        isCurrent = false,
+                                        isFavorite = qTrack.id in favoriteIds,
+                                        onPlay = { onPlayQueueIndex(idx) },
+                                        onMoveUp = if (idx > 0) ({ onMoveQueueItem(idx, idx - 1) }) else null,
+                                        onMoveDown = if (idx < player.queue.lastIndex) ({ onMoveQueueItem(idx, idx + 1) }) else null,
+                                        onRemove = { onRemoveQueueIndex(idx) },
+                                        indexBadge = "${idx + 1}",
+                                    )
+                                }
+                                if (autoItems.isNotEmpty()) {
+                                    item(key = "hdr_next_queue") {
+                                        Text(
+                                            text = "Siguiente después (${autoItems.size})",
+                                            color = NoctaliaColors.TextMuted,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier.padding(top = 8.dp, bottom = 2.dp),
+                                        )
+                                    }
+                                }
+                            }
+                            itemsIndexed(autoItems, key = { relIdx, t -> "qa_${relIdx}_${t.id}" }) { relIdx, qTrack ->
+                                val absIdx = manualCount + relIdx
                                 TrackRowItem(
                                     track = qTrack,
                                     isCurrent = false,
                                     isFavorite = qTrack.id in favoriteIds,
-                                    onPlay = { onPlayQueueIndex(idx) },
-                                    onMoveUp = if (idx > 0) ({ onMoveQueueItem(idx, idx - 1) }) else null,
-                                    onMoveDown = if (idx < player.queue.lastIndex) ({ onMoveQueueItem(idx, idx + 1) }) else null,
-                                    onRemove = { onRemoveQueueIndex(idx) },
-                                    indexBadge = "${idx + 1}",
+                                    onPlay = { onPlayQueueIndex(absIdx) },
+                                    onMoveUp = if (absIdx > 0) ({ onMoveQueueItem(absIdx, absIdx - 1) }) else null,
+                                    onMoveDown = if (absIdx < player.queue.lastIndex) ({ onMoveQueueItem(absIdx, absIdx + 1) }) else null,
+                                    onRemove = { onRemoveQueueIndex(absIdx) },
+                                    indexBadge = "${absIdx + 1}",
                                 )
                             }
                         }
