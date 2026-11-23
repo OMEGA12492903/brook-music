@@ -1,6 +1,8 @@
 package com.noctalia.music.data
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -17,19 +19,38 @@ data class OfflineState(
 )
 
 /**
- * Caché opcional sin conexión (modo avión / metro).
- * Guarda únicamente las canciones que el usuario marca para offline dentro del directorio privado
- * de la app (`filesDir/offline_audio/`), usando `api.streamHttpClient` (0 cookies, tope 30 MiB/pista).
+ * Caché sin conexión + Auto-caché inteligente en Wi-Fi (con expulsión LRU respetando descargas fijadas).
+ * Guarda archivos únicamente dentro del directorio privado (`filesDir/offline_audio/`) usando
+ * `api.streamHttpClient` (0 cookies, tope 30 MiB/pista).
  */
 class OfflineCacheManager(
-    context: Context,
+    private val context: Context,
     private val api: YTMusicApi,
 ) {
     private val dir = File(context.filesDir, "offline_audio").apply { mkdirs() }
+    private val pinnedFile = File(dir, "pinned_ids.txt")
+    private val pinnedIds = ConcurrentHashMap.newKeySet<String>().apply {
+        try {
+            if (pinnedFile.exists()) {
+                pinnedFile.readLines(Charsets.UTF_8)
+                    .map { it.trim() }
+                    .filter { SecurityValidators.isValidVideoId(it) }
+                    .forEach { add(it) }
+            }
+        } catch (_: Exception) {
+        }
+    }
     private val inFlightIds = ConcurrentHashMap.newKeySet<String>()
 
     private val _state = MutableStateFlow(scanDisk(emptySet()))
     val state: StateFlow<OfflineState> = _state.asStateFlow()
+
+    private fun savePinned() {
+        try {
+            pinnedFile.writeText(pinnedIds.joinToString("\n"), Charsets.UTF_8)
+        } catch (_: Exception) {
+        }
+    }
 
     private fun scanDisk(downloading: Set<String>): OfflineState {
         val files = dir.listFiles()?.filter { it.isFile && it.name.endsWith(".audio") && it.length() > 1024L }.orEmpty()
@@ -38,19 +59,43 @@ class OfflineCacheManager(
         return OfflineState(cachedIds = ids, downloadingIds = downloading, totalBytes = total)
     }
 
+    fun isOnUnmeteredWifi(): Boolean {
+        return try {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return false
+            val net = cm.activeNetwork ?: return false
+            val caps = cm.getNetworkCapabilities(net) ?: return false
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) &&
+                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     fun getLocalFile(videoId: String): File? {
         if (!SecurityValidators.isValidVideoId(videoId)) return null
         val f = File(dir, "$videoId.audio")
-        return if (f.exists() && f.length() > 1024L) f else null
+        if (f.exists() && f.length() > 1024L) {
+            // Actualizar marca de uso para expulsión LRU precisa
+            try { f.setLastModified(System.currentTimeMillis()) } catch (_: Exception) {}
+            return f
+        }
+        return null
     }
 
-    fun isCached(videoId: String): Boolean = getLocalFile(videoId) != null
+    fun isCached(videoId: String): Boolean {
+        if (!SecurityValidators.isValidVideoId(videoId)) return false
+        val f = File(dir, "$videoId.audio")
+        return f.exists() && f.length() > 1024L
+    }
 
-    suspend fun cacheTrack(track: Track): Boolean = withContext(Dispatchers.IO) {
+    suspend fun cacheTrack(track: Track, pin: Boolean = true): Boolean = withContext(Dispatchers.IO) {
         val vid = track.id
         if (!SecurityValidators.isValidVideoId(vid)) return@withContext false
-        if (isCached(vid)) return@withContext true
-        // Evitar condición de carrera si se pulsa descargar dos veces sobre la misma canción
+        if (isCached(vid)) {
+            if (pin && pinnedIds.add(vid)) savePinned()
+            return@withContext true
+        }
         if (!inFlightIds.add(vid)) return@withContext false
 
         _state.value = scanDisk(inFlightIds.toSet())
@@ -59,7 +104,6 @@ class OfflineCacheManager(
         try {
             val stream = api.resolveStreamUrl(vid, preferHls = false) ?: return@withContext false
             if (!SecurityValidators.isSafeStreamUrl(stream.url)) return@withContext false
-            // Solo guardar en disco streams de audio directo (no manifiestos .m3u8 de texto)
             if (!stream.mimeType.startsWith("audio/", ignoreCase = true)) return@withContext false
 
             val req = Request.Builder()
@@ -97,6 +141,7 @@ class OfflineCacheManager(
                 tmp.copyTo(target, overwrite = true)
                 tmp.delete()
             }
+            if (pin && pinnedIds.add(vid)) savePinned()
             true
         } catch (_: Exception) {
             tmp.delete()
@@ -107,15 +152,65 @@ class OfflineCacheManager(
         }
     }
 
+    /**
+     * Auto-caché inteligente en Wi-Fi: descarga silenciosamente la canción escuchada y expulsa
+     * por LRU las pistas auto-cacheadas más antiguas si se supera `maxMb`, sin borrar jamás
+     * las canciones fijadas manualmente ni las favoritas protegidas.
+     */
+    suspend fun autoCacheIfWifi(
+        track: Track,
+        maxMb: Int,
+        protectedIds: Set<String> = emptySet(),
+        pin: Boolean = false,
+    ): Boolean = withContext(Dispatchers.IO) {
+        if (!SecurityValidators.isValidVideoId(track.id)) return@withContext false
+        if (!isOnUnmeteredWifi()) return@withContext false
+        val maxBytes = maxMb.coerceIn(100, 4096).toLong() * 1024L * 1024L
+        if (!isCached(track.id)) {
+            val ok = cacheTrack(track, pin = pin)
+            if (!ok) return@withContext false
+        } else if (pin && pinnedIds.add(track.id)) {
+            savePinned()
+        }
+        evictAutoCacheIfNeeded(maxBytes, protectedIds + track.id)
+        true
+    }
+
+    fun evictAutoCacheIfNeeded(maxBytes: Long, protectedIds: Set<String> = emptySet()) {
+        val files = dir.listFiles()
+            ?.filter { it.isFile && it.name.endsWith(".audio") }
+            .orEmpty()
+        var total = files.sumOf { it.length() }
+        if (total <= maxBytes) return
+
+        val evictable = files
+            .filter { f ->
+                val id = f.name.removeSuffix(".audio")
+                id !in pinnedIds && id !in protectedIds
+            }
+            .sortedBy { it.lastModified() }
+
+        for (f in evictable) {
+            if (total <= maxBytes) break
+            val len = f.length()
+            if (f.delete()) {
+                total -= len
+            }
+        }
+        _state.value = scanDisk(inFlightIds.toSet())
+    }
+
     fun removeTrack(videoId: String) {
         if (!SecurityValidators.isValidVideoId(videoId)) return
         File(dir, "$videoId.audio").delete()
-        _state.value = scanDisk(_state.value.downloadingIds)
+        if (pinnedIds.remove(videoId)) savePinned()
+        _state.value = scanDisk(inFlightIds.toSet())
     }
 
     fun clearAll() {
         dir.listFiles()?.forEach { it.delete() }
-        _state.value = scanDisk(_state.value.downloadingIds)
+        pinnedIds.clear()
+        _state.value = scanDisk(inFlightIds.toSet())
     }
 
     companion object {

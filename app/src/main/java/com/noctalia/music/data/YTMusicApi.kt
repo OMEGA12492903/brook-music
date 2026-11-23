@@ -735,6 +735,247 @@ class YTMusicApi(private val authStore: AuthStore) {
         tracks
     }
 
+    // ─── PÁGINA REAL DE ARTISTA Y ÁLBUM (TOP CANCIONES, ÁLBUMES, SENCILLOS, ARTISTAS SIMILARES) ───
+    suspend fun resolveArtistBrowseId(artistName: String): String? = withContext(Dispatchers.IO) {
+        val clean = artistName.substringBefore(",").substringBefore(" & ").substringBefore(" feat.").trim().take(120)
+        if (clean.isEmpty()) return@withContext null
+        val payload = buildJsonObject {
+            put("context", webRemixContext())
+            put("query", clean)
+            put("params", ARTISTS_FILTER_PARAMS)
+        }
+        val root = postWebRemix("search", payload, useAuth = false) ?: return@withContext null
+        findFirstArtistBrowseId(root, depth = 0)
+    }
+
+    private fun findFirstArtistBrowseId(node: JsonElement, depth: Int): String? {
+        if (depth > MAX_JSON_DEPTH) return null
+        when (node) {
+            is JsonObject -> {
+                val li = node.obj("musicResponsiveListItemRenderer")
+                if (li != null) {
+                    val bid = li.obj("navigationEndpoint")?.obj("browseEndpoint")?.str("browseId")
+                    if (bid != null && bid.startsWith("UC") && SecurityValidators.isValidBrowseId(bid)) {
+                        return bid
+                    }
+                }
+                for (v in node.values) {
+                    val found = findFirstArtistBrowseId(v, depth + 1)
+                    if (found != null) return found
+                }
+            }
+            is JsonArray -> {
+                for (el in node) {
+                    val found = findFirstArtistBrowseId(el, depth + 1)
+                    if (found != null) return found
+                }
+            }
+            else -> Unit
+        }
+        return null
+    }
+
+    suspend fun fetchArtistPage(nameOrBrowseId: String, fallbackName: String = ""): ArtistPageData? =
+        withContext(Dispatchers.IO) {
+            val trimmed = nameOrBrowseId.trim()
+            if (trimmed.isEmpty()) return@withContext null
+            val browseId = if (trimmed.startsWith("UC") && SecurityValidators.isValidBrowseId(trimmed)) {
+                trimmed
+            } else {
+                resolveArtistBrowseId(trimmed)
+            }
+            val displayFallback = fallbackName.ifBlank { if (trimmed.startsWith("UC")) "Artista" else trimmed }
+
+            if (browseId == null) {
+                // Respaldo elegante si no se resolvió canal UC: crear ficha desde búsqueda directa
+                val fallbackSongs = search(displayFallback, limit = 15, mode = "artist")
+                if (fallbackSongs.isEmpty()) return@withContext null
+                return@withContext ArtistPageData(
+                    browseId = "",
+                    name = displayFallback,
+                    bannerThumb = fallbackSongs.first().thumb,
+                    topSongs = fallbackSongs,
+                )
+            }
+
+            val payload = buildJsonObject {
+                put("context", webRemixContext())
+                put("browseId", browseId)
+            }
+            val root = postWebRemix("browse", payload, useAuth = false)
+            if (root == null) {
+                val fallbackSongs = search(displayFallback, limit = 15, mode = "artist")
+                if (fallbackSongs.isEmpty()) return@withContext null
+                return@withContext ArtistPageData(
+                    browseId = browseId,
+                    name = displayFallback,
+                    bannerThumb = fallbackSongs.first().thumb,
+                    topSongs = fallbackSongs,
+                )
+            }
+
+            val hdr = root.obj("header")?.obj("musicImmersiveHeaderRenderer")
+                ?: root.obj("header")?.obj("musicVisualHeaderRenderer")
+            val name = runsText(hdr?.obj("title")).ifBlank { displayFallback }.take(120)
+            val description = runsText(hdr?.obj("description")).take(400)
+            val subscribers = runsText(
+                hdr?.obj("subscriptionButton")?.obj("subscribeButtonRenderer")?.obj("subscriberCountText")
+            ).ifBlank {
+                runsText(hdr?.obj("subscriptionButton")?.obj("subscribeButtonRenderer")?.obj("longSubscriberCountText"))
+            }.take(60)
+            val bannerThumb = SecurityValidators.upgradeThumbUrl(
+                lastThumbUrl(hdr?.obj("thumbnail")?.obj("musicThumbnailRenderer")?.obj("thumbnail")?.arr("thumbnails"))
+                    .ifBlank { lastThumbUrl(hdr?.obj("foregroundThumbnail")?.obj("musicThumbnailRenderer")?.obj("thumbnail")?.arr("thumbnails")) }
+            )
+
+            val topSongs = mutableListOf<Track>()
+            val seenSongs = HashSet<String>()
+            val albums = mutableListOf<ArtistAlbumItem>()
+            val singles = mutableListOf<ArtistAlbumItem>()
+            val seenAlbums = HashSet<String>()
+            val related = mutableListOf<RelatedArtistItem>()
+            val seenRelated = HashSet<String>()
+
+            val sections = root.obj("contents")
+                ?.obj("singleColumnBrowseResultsRenderer")
+                ?.arr("tabs")?.firstOrNull()?.asObj()
+                ?.obj("tabRenderer")?.obj("content")
+                ?.obj("sectionListRenderer")?.arr("contents")
+                .orEmpty()
+
+            for (sec in sections) {
+                val obj = sec.asObj() ?: continue
+                // Top canciones en musicShelfRenderer
+                val shelf = obj.obj("musicShelfRenderer")
+                if (shelf != null) {
+                    for (item in shelf.arr("contents").orEmpty()) {
+                        val li = item.asObj()?.obj("musicResponsiveListItemRenderer") ?: continue
+                        val tr = parseResponsiveItem(li)
+                        if (tr != null && seenSongs.add(tr.id)) {
+                            topSongs.add(
+                                if (tr.artist == "YouTube Music") tr.copy(artist = name) else tr
+                            )
+                        }
+                    }
+                }
+                // Álbumes, Sencillos y Artistas similares en musicCarouselShelfRenderer
+                val carousel = obj.obj("musicCarouselShelfRenderer")
+                if (carousel != null) {
+                    val headerTitle = runsText(
+                        carousel.obj("header")?.obj("musicCarouselShelfBasicHeaderRenderer")?.obj("title")
+                    ).lowercase()
+                    val isSinglesSection = headerTitle.contains("sencillo") || headerTitle.contains("single") || headerTitle.contains("ep")
+                    for (cItem in carousel.arr("contents").orEmpty()) {
+                        val twoRow = cItem.asObj()?.obj("musicTwoRowItemRenderer") ?: continue
+                        val itemBrowseId = twoRow.obj("navigationEndpoint")?.obj("browseEndpoint")?.str("browseId") ?: continue
+                        if (!SecurityValidators.isValidBrowseId(itemBrowseId)) continue
+                        val itemTitle = runsText(twoRow.obj("title")).take(120)
+                        if (itemTitle.isBlank()) continue
+                        val itemSub = runsText(twoRow.obj("subtitle")).take(100)
+                        val itemThumb = SecurityValidators.upgradeThumbUrl(
+                            lastThumbUrl(
+                                twoRow.obj("thumbnailRenderer")
+                                    ?.obj("musicThumbnailRenderer")
+                                    ?.obj("thumbnail")?.arr("thumbnails")
+                            )
+                        )
+                        when {
+                            itemBrowseId.startsWith("MPREb_") || itemBrowseId.startsWith("OLAK5uy_") -> {
+                                if (seenAlbums.add(itemBrowseId)) {
+                                    val entry = ArtistAlbumItem(
+                                        browseId = itemBrowseId,
+                                        title = itemTitle,
+                                        year = itemSub,
+                                        thumb = itemThumb,
+                                        isSingle = isSinglesSection || itemSub.contains("single", ignoreCase = true) || itemSub.contains("sencillo", ignoreCase = true),
+                                    )
+                                    if (entry.isSingle) singles.add(entry) else albums.add(entry)
+                                }
+                            }
+                            itemBrowseId.startsWith("UC") && itemBrowseId != browseId -> {
+                                if (seenRelated.add(itemBrowseId)) {
+                                    related.add(
+                                        RelatedArtistItem(
+                                            browseId = itemBrowseId,
+                                            name = itemTitle,
+                                            subtitle = itemSub,
+                                            thumb = itemThumb,
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (topSongs.size < 5) {
+                val extra = search(name, limit = 12, mode = "artist")
+                for (t in extra) {
+                    if (seenSongs.add(t.id)) topSongs.add(t)
+                }
+            }
+
+            ArtistPageData(
+                browseId = browseId,
+                name = name,
+                subscribers = subscribers,
+                description = description,
+                bannerThumb = bannerThumb.ifBlank { topSongs.firstOrNull()?.thumb.orEmpty() },
+                topSongs = topSongs.take(20),
+                albums = albums.take(15),
+                singles = singles.take(15),
+                relatedArtists = related.take(12),
+            )
+        }
+
+    suspend fun fetchAlbumPage(
+        browseId: String,
+        fallbackTitle: String = "Álbum",
+        fallbackArtist: String = "",
+        fallbackThumb: String = "",
+    ): AlbumPageData? = withContext(Dispatchers.IO) {
+        val cleanId = browseId.trim()
+        if (!SecurityValidators.isValidBrowseId(cleanId)) return@withContext null
+        val payload = buildJsonObject {
+            put("context", webRemixContext())
+            put("browseId", cleanId)
+        }
+        val root = postWebRemix("browse", payload, useAuth = false) ?: return@withContext null
+
+        val respHdr = root.obj("contents")?.obj("twoColumnBrowseResultsRenderer")
+            ?.arr("tabs")?.firstOrNull()?.asObj()?.obj("tabRenderer")?.obj("content")
+            ?.obj("sectionListRenderer")?.arr("contents")?.firstOrNull()?.asObj()
+            ?.obj("musicResponsiveHeaderRenderer")
+            ?: root.obj("header")?.obj("musicDetailHeaderRenderer")
+
+        val title = runsText(respHdr?.obj("title")).ifBlank { fallbackTitle }.take(120)
+        val sub = runsText(respHdr?.obj("subtitle")).take(120)
+        val strap = runsText(respHdr?.obj("straplineTextOne")).ifBlank { fallbackArtist }.take(120)
+        val thumb = SecurityValidators.upgradeThumbUrl(
+            lastThumbUrl(respHdr?.obj("thumbnail")?.obj("musicThumbnailRenderer")?.obj("thumbnail")?.arr("thumbnails"))
+        ).ifBlank { SecurityValidators.upgradeThumbUrl(fallbackThumb) }
+
+        val rawTracks = mutableListOf<Track>()
+        val seen = HashSet<String>()
+        collectResponsiveTracks(root, rawTracks, seen, limit = 80, depth = 0)
+        val enriched = rawTracks.map { t ->
+            t.copy(
+                artist = if (t.artist == "YouTube Music" && strap.isNotBlank()) strap else t.artist,
+                album = title,
+                thumb = t.thumb.ifBlank { thumb },
+            )
+        }
+        AlbumPageData(
+            browseId = cleanId,
+            title = title,
+            artist = strap.ifBlank { enriched.firstOrNull()?.artist.orEmpty() },
+            year = sub,
+            thumb = thumb,
+            tracks = enriched,
+        )
+    }
+
     private fun collectTwoRowPlaylists(
         node: JsonElement,
         out: MutableList<RemotePlaylist>,
@@ -911,6 +1152,7 @@ class YTMusicApi(private val authStore: AuthStore) {
         private val ALLOWED_API_HOSTS = setOf("music.youtube.com", "www.youtube.com")
         private val ALLOWED_ENDPOINTS = setOf("search", "next", "browse", "music/get_search_suggestions")
         private const val SONGS_FILTER_PARAMS = "EgWKAQIIAWoKEAkQBRAKEAMQBA%3D%3D"
+        private const val ARTISTS_FILTER_PARAMS = "EgWKAQIgAWoKEAkQChADEAUQBA%3D%3D"
         private const val STREAM_CACHE_TTL_MS = 15 * 60 * 1000L
         private const val VISITOR_TTL_MS = 25 * 60 * 1000L
         private const val MAX_API_JSON_BYTES = 4L * 1024L * 1024L

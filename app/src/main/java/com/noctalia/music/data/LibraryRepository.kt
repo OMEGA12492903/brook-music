@@ -95,11 +95,31 @@ class LibraryRepository(context: Context) {
                 null
             }
         }
+        val cleanProfiles = LinkedHashMap<String, DeviceAudioProfile>()
+        raw.settings.audioProfiles.entries.take(24).forEach { (k, p) ->
+            val key = k.replace(Regex("[^A-Za-z0-9_.-]"), "_").take(64)
+            if (key.isNotEmpty()) {
+                val safeBands = p.bandLevelsMb.take(10).map { it.coerceIn(-1500, 1500) }
+                    .ifEmpty { listOf(0, 0, 0, 0, 0) }
+                cleanProfiles[key] = DeviceAudioProfile(
+                    presetName = p.presetName.trim().take(24).ifEmpty { "FLAT" },
+                    bandLevelsMb = safeBands,
+                    bassBoost = p.bassBoost.coerceIn(0, 1000),
+                    normalizeVolume = p.normalizeVolume,
+                )
+            }
+        }
         return LibraryPayload(
             favorites = favs,
             playlists = if (pls.isEmpty()) mapOf("Gaming" to emptyList(), "Chill" to emptyList()) else pls,
             recent = rec,
-            settings = raw.settings.copy(bgStyle = validBgStyle, loopStatus = validLoop),
+            settings = raw.settings.copy(
+                bgStyle = validBgStyle,
+                loopStatus = validLoop,
+                crossfadeSec = raw.settings.crossfadeSec.coerceIn(0, 10),
+                autoCacheMaxMb = raw.settings.autoCacheMaxMb.coerceIn(100, 4096),
+                audioProfiles = cleanProfiles,
+            ),
             searchHistory = cleanHistory,
             stats = cleanStats,
             lastSession = cleanSnap,
@@ -246,6 +266,51 @@ class LibraryRepository(context: Context) {
     fun updateSmoothFade(enabled: Boolean) {
         val cur = _state.value
         persist(cur.copy(settings = cur.settings.copy(smoothFade = enabled)))
+    }
+
+    fun updateCrossfadeSec(sec: Int) {
+        val clamped = sec.coerceIn(0, 10)
+        val cur = _state.value
+        if (cur.settings.crossfadeSec == clamped) return
+        persist(cur.copy(settings = cur.settings.copy(crossfadeSec = clamped)))
+    }
+
+    fun updateAutoCacheWifi(enabled: Boolean) {
+        val cur = _state.value
+        persist(cur.copy(settings = cur.settings.copy(autoCacheWifi = enabled)))
+    }
+
+    fun updateAutoCacheMaxMb(maxMb: Int) {
+        val clamped = maxMb.coerceIn(100, 4096)
+        val cur = _state.value
+        persist(cur.copy(settings = cur.settings.copy(autoCacheMaxMb = clamped)))
+    }
+
+    fun updateAutoCacheFavorites(enabled: Boolean) {
+        val cur = _state.value
+        persist(cur.copy(settings = cur.settings.copy(autoCacheFavorites = enabled)))
+    }
+
+    fun updatePerDeviceAudioProfiles(enabled: Boolean) {
+        val cur = _state.value
+        persist(cur.copy(settings = cur.settings.copy(perDeviceAudioProfiles = enabled)))
+    }
+
+    fun saveDeviceAudioProfile(deviceKey: String, profile: DeviceAudioProfile) {
+        val cleanKey = deviceKey.replace(Regex("[^A-Za-z0-9_.-]"), "_").take(64)
+        if (cleanKey.isEmpty()) return
+        val cur = _state.value
+        val nextMap = LinkedHashMap(cur.settings.audioProfiles)
+        nextMap[cleanKey] = profile.copy(
+            bandLevelsMb = profile.bandLevelsMb.take(10).map { it.coerceIn(-1500, 1500) },
+            bassBoost = profile.bassBoost.coerceIn(0, 1000),
+        )
+        while (nextMap.size > 24) {
+            val firstKey = nextMap.keys.firstOrNull() ?: break
+            if (firstKey == cleanKey) break
+            nextMap.remove(firstKey)
+        }
+        persist(cur.copy(settings = cur.settings.copy(audioProfiles = nextMap)))
     }
 
     // ─── HISTORIAL DE BÚSQUEDAS ───

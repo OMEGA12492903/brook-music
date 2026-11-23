@@ -32,6 +32,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -59,20 +60,28 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.Bedtime
+import androidx.compose.material.icons.rounded.Bluetooth
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.DownloadDone
 import androidx.compose.material.icons.rounded.DownloadForOffline
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.Headphones
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Repeat
 import androidx.compose.material.icons.rounded.RepeatOne
+import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
+import androidx.compose.material.icons.rounded.Speaker
+import androidx.compose.material.icons.rounded.Translate
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -374,12 +383,18 @@ fun FullPlayerOverlay(
     onMoveQueueItem: (Int, Int) -> Unit,
     onClearQueue: () -> Unit,
     onSelectEqPreset: (EqPreset) -> Unit,
+    onEqBandLevelChange: (Int, Int) -> Unit,
+    onResetEqBands: () -> Unit,
+    onTogglePerDeviceProfiles: (Boolean) -> Unit,
+    onCrossfadeSecChange: (Int) -> Unit,
     onBassBoostChange: (Int) -> Unit,
     onToggleNormalize: (Boolean) -> Unit,
     onToggleSponsorBlock: (Boolean) -> Unit,
     onToggleSkipSilence: (Boolean) -> Unit,
     onToggleSmoothFade: (Boolean) -> Unit,
     onSetSpeedPitch: (Float, Float) -> Unit,
+    onToggleLyricsTranslate: () -> Unit,
+    onShareLyricsCard: (Track, List<String>) -> Unit,
     onSetSleepMinutes: (Int) -> Unit,
     onSetSleepEndOfTrack: () -> Unit,
     onCancelSleep: () -> Unit,
@@ -571,6 +586,8 @@ fun FullPlayerOverlay(
                         player = player,
                         onSeek = onSeek,
                         onPlayPause = onPlayPause,
+                        onToggleTranslate = onToggleLyricsTranslate,
+                        onShareLyricsCard = onShareLyricsCard,
                         modifier = Modifier
                             .fillMaxSize()
                             .padding(vertical = 8.dp),
@@ -736,11 +753,70 @@ fun FullPlayerOverlay(
                             }
                         }
 
+                        // Salida de audio actual y perfiles automáticos Bluetooth / Cable / Altavoz
+                        NoctaliaGlassCard(cornerRadius = 18.dp, strong = true, modifier = Modifier.fillMaxWidth()) {
+                            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                ) {
+                                    Icon(
+                                        imageVector = when {
+                                            audioFx.activeOutputIsBluetooth -> Icons.Rounded.Bluetooth
+                                            audioFx.activeOutputKey.startsWith("wired_") -> Icons.Rounded.Headphones
+                                            else -> Icons.Rounded.Speaker
+                                        },
+                                        contentDescription = null,
+                                        tint = NoctaliaColors.CyanGlow,
+                                        modifier = Modifier.size(22.dp),
+                                    )
+                                    Column(Modifier.weight(1f)) {
+                                        Text(
+                                            text = audioFx.activeOutputLabel,
+                                            color = NoctaliaColors.TextPrimary,
+                                            fontSize = 14.sp,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        Text(
+                                            text = if (audioFx.perDeviceProfilesEnabled) {
+                                                "Perfil guardado por dispositivo (${audioFx.savedProfileCount} guardados)"
+                                            } else {
+                                                "Mismo EQ para todos los dispositivos"
+                                            },
+                                            color = NoctaliaColors.TextMuted,
+                                            fontSize = 11.sp,
+                                        )
+                                    }
+                                    Switch(
+                                        checked = audioFx.perDeviceProfilesEnabled,
+                                        onCheckedChange = onTogglePerDeviceProfiles,
+                                        colors = SwitchDefaults.colors(checkedThumbColor = NoctaliaColors.OnCyan, checkedTrackColor = NoctaliaColors.Cyan),
+                                    )
+                                }
+                            }
+                        }
+
                         NoctaliaGlassCard(cornerRadius = 18.dp, strong = true, modifier = Modifier.fillMaxWidth()) {
                             Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                Text("Ecualizador (Presets)", color = NoctaliaColors.CyanGlow, fontSize = 15.sp, fontWeight = FontWeight.ExtraBold)
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text("Ecualizador (5 bandas + Presets)", color = NoctaliaColors.CyanGlow, fontSize = 15.sp, fontWeight = FontWeight.ExtraBold)
+                                    Text(
+                                        text = "Restablecer",
+                                        color = NoctaliaColors.TextMuted,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.clickable(onClick = onResetEqBands),
+                                    )
+                                }
                                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    items(EqPreset.entries) { preset ->
+                                    items(EqPreset.entries, key = { it.name }, contentType = { "eq_preset" }) { preset ->
                                         NoctaliaPillChip(
                                             label = preset.label,
                                             active = audioFx.preset == preset,
@@ -749,7 +825,49 @@ fun FullPlayerOverlay(
                                     }
                                 }
 
-                                Spacer(Modifier.height(4.dp))
+                                // Sliders reales por banda de frecuencia (mB -> dB)
+                                val minMbF = audioFx.minBandMb.toFloat()
+                                val maxMbF = audioFx.maxBandMb.toFloat().coerceAtLeast(minMbF + 100f)
+                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    audioFx.bandLevelsMb.forEachIndexed { bIdx, levelMb ->
+                                        val freqLbl = audioFx.bandFreqLabels.getOrElse(bIdx) { "B${bIdx + 1}" }
+                                        val db = levelMb / 100f
+                                        val dbLabel = if (db >= 0f) "+%.1f dB".format(db) else "%.1f dB".format(db)
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        ) {
+                                            Text(
+                                                text = freqLbl,
+                                                color = NoctaliaColors.TextMuted,
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                modifier = Modifier.width(46.dp),
+                                            )
+                                            Slider(
+                                                value = levelMb.toFloat().coerceIn(minMbF, maxMbF),
+                                                onValueChange = { onEqBandLevelChange(bIdx, it.toInt()) },
+                                                valueRange = minMbF..maxMbF,
+                                                modifier = Modifier.weight(1f),
+                                                colors = SliderDefaults.colors(
+                                                    thumbColor = Color.White,
+                                                    activeTrackColor = NoctaliaColors.CyanGlow,
+                                                    inactiveTrackColor = Color.White.copy(alpha = 0.2f),
+                                                ),
+                                            )
+                                            Text(
+                                                text = dbLabel,
+                                                color = if (levelMb == 0) NoctaliaColors.TextDim else NoctaliaColors.CyanGlow,
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                modifier = Modifier.width(52.dp),
+                                            )
+                                        }
+                                    }
+                                }
+
+                                Spacer(Modifier.height(2.dp))
                                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                     Text("Bass Boost", color = NoctaliaColors.TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                                     Text("${audioFx.bassBoostStrength / 10}%", color = NoctaliaColors.CyanGlow, fontSize = 13.sp, fontWeight = FontWeight.Bold)
@@ -758,6 +876,37 @@ fun FullPlayerOverlay(
                                     value = audioFx.bassBoostStrength.toFloat(),
                                     onValueChange = { onBassBoostChange(it.toInt()) },
                                     valueRange = 0f..1000f,
+                                    colors = SliderDefaults.colors(
+                                        thumbColor = Color.White,
+                                        activeTrackColor = NoctaliaColors.Cyan,
+                                        inactiveTrackColor = Color.White.copy(alpha = 0.2f),
+                                    ),
+                                )
+                            }
+                        }
+
+                        // Crossfade solapado real entre canciones (0..10s)
+                        NoctaliaGlassCard(cornerRadius = 18.dp, strong = true, modifier = Modifier.fillMaxWidth()) {
+                            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                    Text("Crossfade entre canciones", color = NoctaliaColors.CyanGlow, fontSize = 15.sp, fontWeight = FontWeight.ExtraBold)
+                                    Text(
+                                        text = if (audioFx.crossfadeSec == 0) "Desactivado" else "${audioFx.crossfadeSec} s",
+                                        color = if (audioFx.crossfadeSec > 0) NoctaliaColors.CyanGlow else NoctaliaColors.TextMuted,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                    )
+                                }
+                                Text(
+                                    text = "Mezcla suavemente el final de cada pista con el inicio de la siguiente",
+                                    color = NoctaliaColors.TextMuted,
+                                    fontSize = 11.sp,
+                                )
+                                Slider(
+                                    value = audioFx.crossfadeSec.toFloat(),
+                                    onValueChange = { onCrossfadeSecChange(it.toInt()) },
+                                    valueRange = 0f..10f,
+                                    steps = 9,
                                     colors = SliderDefaults.colors(
                                         thumbColor = Color.White,
                                         activeTrackColor = NoctaliaColors.Cyan,
@@ -953,6 +1102,13 @@ fun FullPlayerOverlay(
                     )
 
                     var favPop by remember { mutableStateOf(false) }
+                    var heartBurstVisible by remember { mutableStateOf(false) }
+                    LaunchedEffect(heartBurstVisible) {
+                        if (heartBurstVisible) {
+                            kotlinx.coroutines.delay(650L)
+                            heartBurstVisible = false
+                        }
+                    }
                     val favScale by animateFloatAsState(
                         targetValue = if (favPop) 1.36f else 1f,
                         animationSpec = spring(dampingRatio = 0.40f, stiffness = 540f),
@@ -969,11 +1125,20 @@ fun FullPlayerOverlay(
                         modifier = Modifier.fillMaxSize(),
                         verticalArrangement = Arrangement.SpaceBetween,
                     ) {
-                        // Carátula tal cual, fija y nítida (deslizar lateral para Siguiente/Anterior)
+                        // Carátula interactiva: deslizar lateral = Siguiente/Anterior · doble toque = Favorita ❤️
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .weight(1f)
+                                .pointerInput(track.id) {
+                                    detectTapGestures(
+                                        onDoubleTap = {
+                                            favPop = true
+                                            heartBurstVisible = true
+                                            onToggleFavorite(track)
+                                        }
+                                    )
+                                }
                                 .pointerInput(track.id) {
                                     detectHorizontalDragGestures(
                                         onDragStart = {
@@ -1019,6 +1184,47 @@ fun FullPlayerOverlay(
                                         rotationZ = (animCoverDragX / 40f).coerceIn(-5f, 5f)
                                     },
                                 )
+                            }
+
+                            // Indicador visual al deslizar portada
+                            if (coverDragging && abs(coverDragX) > 48f) {
+                                NoctaliaGlassCard(
+                                    cornerRadius = 99.dp,
+                                    strong = true,
+                                    modifier = Modifier
+                                        .align(Alignment.BottomCenter)
+                                        .padding(bottom = 10.dp),
+                                ) {
+                                    Text(
+                                        text = if (coverDragX < 0f) "Siguiente →" else "← Anterior",
+                                        color = NoctaliaColors.CyanGlow,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                                    )
+                                }
+                            }
+
+                            // Animación de corazón al hacer doble toque sobre la portada
+                            androidx.compose.animation.AnimatedVisibility(
+                                visible = heartBurstVisible,
+                                enter = scaleIn(spring(dampingRatio = 0.42f, stiffness = 460f), initialScale = 0.4f) + fadeIn(tween(120)),
+                                exit = scaleOut(tween(220), targetScale = 1.35f) + fadeOut(tween(220)),
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(92.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(0x88040B14)),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Favorite,
+                                        contentDescription = null,
+                                        tint = NoctaliaColors.CyanGlow,
+                                        modifier = Modifier.size(54.dp),
+                                    )
+                                }
                             }
                         }
 
@@ -1320,28 +1526,36 @@ private fun LyricsPanel(
     player: PlayerUiState,
     onSeek: (Long) -> Unit,
     onPlayPause: () -> Unit,
+    onToggleTranslate: () -> Unit,
+    onShareLyricsCard: (Track, List<String>) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val track = player.currentTrack
     val lyrics = player.lyrics
     val listState = rememberLazyListState()
+    var shareMode by remember(track?.id) { mutableStateOf(false) }
+    var selectedIndices by remember(track?.id) { mutableStateOf(emptySet<Int>()) }
 
     val activeIdx = remember(lyrics.synced, player.positionMs) {
         if (lyrics.synced.isEmpty()) -1
         else lyrics.synced.indexOfLast { it.timeMs <= player.positionMs + 250L }
     }
 
-    LaunchedEffect(activeIdx) {
-        if (activeIdx >= 0) {
+    LaunchedEffect(activeIdx, shareMode) {
+        if (activeIdx >= 0 && !shareMode) {
             listState.animateScrollToItem((activeIdx - 2).coerceAtLeast(0))
         }
+    }
+
+    val plainLines = remember(lyrics.plain) {
+        lyrics.plain.lines().map { it.trim() }.filter { it.isNotEmpty() }
     }
 
     Column(
         modifier = modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        // Cabecera compacta estilo Apple Music mientras lees la letra
+        // Cabecera compacta estilo Apple Music + botones de Traducir (ES) y Compartir Tarjeta
         if (track != null) {
             NoctaliaGlassCard(cornerRadius = 18.dp, modifier = Modifier.fillMaxWidth()) {
                 Row(
@@ -1349,9 +1563,9 @@ private fun LyricsPanel(
                         .fillMaxWidth()
                         .padding(horizontal = 10.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     TrackCoverImage(url = track.thumb, size = 40.dp, cornerRadius = 10.dp)
-                    Spacer(Modifier.width(10.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = track.title,
@@ -1362,13 +1576,67 @@ private fun LyricsPanel(
                             overflow = TextOverflow.Ellipsis,
                         )
                         Text(
-                            text = "${track.artist} · Letra",
+                            text = when {
+                                shareMode -> "Elige hasta 4 versos (${selectedIndices.size}/4)"
+                                player.lyricsTranslateEnabled && player.lyricsAlreadySpanish -> "${track.artist} · Ya en español"
+                                player.lyricsTranslateEnabled -> "${track.artist} · Traducida al ES"
+                                else -> "${track.artist} · Letra"
+                            },
                             color = NoctaliaColors.CyanGlow,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.SemiBold,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
+                    }
+                    if (lyrics.hasLyrics) {
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(99.dp))
+                                .background(
+                                    if (player.lyricsTranslateEnabled) NoctaliaColors.Cyan.copy(alpha = 0.28f)
+                                    else Color.White.copy(alpha = 0.10f)
+                                )
+                                .clickable(onClick = onToggleTranslate)
+                                .padding(horizontal = 8.dp, vertical = 6.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Translate,
+                                    contentDescription = "Traducir letra",
+                                    tint = if (player.lyricsTranslateEnabled) NoctaliaColors.CyanGlow else NoctaliaColors.TextPrimary,
+                                    modifier = Modifier.size(15.dp),
+                                )
+                                Text(
+                                    text = "ES",
+                                    color = if (player.lyricsTranslateEnabled) NoctaliaColors.CyanGlow else NoctaliaColors.TextPrimary,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                )
+                            }
+                        }
+                        Box(
+                            modifier = Modifier
+                                .size(32.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    if (shareMode) NoctaliaColors.Cyan.copy(alpha = 0.30f)
+                                    else Color.White.copy(alpha = 0.10f)
+                                )
+                                .clickable {
+                                    shareMode = !shareMode
+                                    if (!shareMode) selectedIndices = emptySet()
+                                },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Share,
+                                contentDescription = "Compartir tarjeta de letra",
+                                tint = if (shareMode) NoctaliaColors.CyanGlow else NoctaliaColors.TextPrimary,
+                                modifier = Modifier.size(16.dp),
+                            )
+                        }
                     }
                     Box(
                         modifier = Modifier
@@ -1409,59 +1677,157 @@ private fun LyricsPanel(
                     LazyColumn(
                         state = listState,
                         modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(horizontal = 18.dp, vertical = 26.dp),
-                        verticalArrangement = Arrangement.spacedBy(18.dp),
+                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 22.dp, bottom = if (shareMode) 76.dp else 26.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp),
                     ) {
-                        itemsIndexed(lyrics.synced) { idx, line ->
+                        itemsIndexed(
+                            items = lyrics.synced,
+                            key = { idx, line -> "lyr_${idx}_${line.timeMs}" },
+                            contentType = { _, _ -> "synced_lyric" },
+                        ) { idx, line ->
                             val isActive = idx == activeIdx
+                            val isSelected = idx in selectedIndices
+                            val trText = if (player.lyricsTranslateEnabled && !player.lyricsAlreadySpanish) {
+                                player.translatedLyricsLines.getOrNull(idx).orEmpty()
+                            } else {
+                                ""
+                            }
                             val lineAlpha by animateFloatAsState(
                                 targetValue = when {
+                                    shareMode -> if (isSelected) 1f else 0.72f
                                     isActive -> 1f
                                     idx < activeIdx -> 0.34f
                                     else -> 0.56f
                                 },
-                                animationSpec = tween(280, easing = FastOutSlowInEasing),
+                                animationSpec = tween(240, easing = FastOutSlowInEasing),
                                 label = "lyric_alpha_$idx",
                             )
                             val lineScale by animateFloatAsState(
-                                targetValue = if (isActive) 1.05f else 0.96f,
-                                animationSpec = spring(dampingRatio = 0.72f, stiffness = 340f),
+                                targetValue = if (!shareMode && isActive) 1.04f else 0.98f,
+                                animationSpec = spring(dampingRatio = 0.74f, stiffness = 340f),
                                 label = "lyric_scale_$idx",
                             )
-                            Text(
-                                text = line.text,
-                                color = Color.White,
-                                fontSize = if (isActive) 22.sp else 18.sp,
-                                fontWeight = if (isActive) FontWeight.ExtraBold else FontWeight.Bold,
-                                lineHeight = 28.sp,
+                            Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .then(
+                                        if (shareMode && isSelected) {
+                                            Modifier
+                                                .background(NoctaliaColors.Cyan.copy(alpha = 0.20f))
+                                                .border(1.3.dp, NoctaliaColors.CyanGlow, RoundedCornerShape(14.dp))
+                                                .padding(horizontal = 12.dp, vertical = 8.dp)
+                                        } else {
+                                            Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                                        }
+                                    )
                                     .graphicsLayer {
                                         alpha = lineAlpha
                                         scaleX = lineScale
                                         scaleY = lineScale
                                         transformOrigin = TransformOrigin(0f, 0.5f)
                                     }
-                                    .clickable { onSeek(line.timeMs) },
-                            )
+                                    .clickable {
+                                        if (shareMode) {
+                                            selectedIndices = if (isSelected) {
+                                                selectedIndices - idx
+                                            } else if (selectedIndices.size < 4) {
+                                                selectedIndices + idx
+                                            } else {
+                                                selectedIndices
+                                            }
+                                        } else {
+                                            onSeek(line.timeMs)
+                                        }
+                                    },
+                                verticalArrangement = Arrangement.spacedBy(3.dp),
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Text(
+                                        text = line.text,
+                                        color = Color.White,
+                                        fontSize = if (!shareMode && isActive) 21.sp else 17.sp,
+                                        fontWeight = if (isActive || isSelected) FontWeight.ExtraBold else FontWeight.Bold,
+                                        lineHeight = 26.sp,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    if (shareMode && isSelected) {
+                                        Icon(Icons.Rounded.Check, contentDescription = null, tint = NoctaliaColors.CyanGlow, modifier = Modifier.size(18.dp))
+                                    }
+                                }
+                                if (trText.isNotBlank() && !trText.equals(line.text, ignoreCase = true)) {
+                                    Text(
+                                        text = trText,
+                                        color = NoctaliaColors.CyanGlow.copy(alpha = 0.88f),
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        lineHeight = 18.sp,
+                                    )
+                                }
+                            }
                         }
                     }
                 }
 
-                lyrics.plain.isNotBlank() -> {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .verticalScroll(rememberScrollState())
-                            .padding(18.dp),
+                plainLines.isNotEmpty() -> {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 18.dp, bottom = if (shareMode) 76.dp else 22.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
-                        Text(
-                            text = lyrics.plain,
-                            color = NoctaliaColors.TextPrimary,
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.Medium,
-                            lineHeight = 25.sp,
-                        )
+                        itemsIndexed(
+                            items = plainLines,
+                            key = { idx, _ -> "plyr_$idx" },
+                            contentType = { _, _ -> "plain_lyric" },
+                        ) { idx, lineText ->
+                            val isSelected = idx in selectedIndices
+                            val trText = if (player.lyricsTranslateEnabled && !player.lyricsAlreadySpanish) {
+                                player.translatedLyricsLines.getOrNull(idx).orEmpty()
+                            } else {
+                                ""
+                            }
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .then(
+                                        if (shareMode && isSelected) {
+                                            Modifier
+                                                .background(NoctaliaColors.Cyan.copy(alpha = 0.20f))
+                                                .border(1.3.dp, NoctaliaColors.CyanGlow, RoundedCornerShape(12.dp))
+                                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                                        } else {
+                                            Modifier.padding(horizontal = 2.dp, vertical = 1.dp)
+                                        }
+                                    )
+                                    .clickable(enabled = shareMode) {
+                                        selectedIndices = if (isSelected) {
+                                            selectedIndices - idx
+                                        } else if (selectedIndices.size < 4) {
+                                            selectedIndices + idx
+                                        } else {
+                                            selectedIndices
+                                        }
+                                    },
+                                verticalArrangement = Arrangement.spacedBy(2.dp),
+                            ) {
+                                Text(
+                                    text = lineText,
+                                    color = NoctaliaColors.TextPrimary,
+                                    fontSize = 16.sp,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                    lineHeight = 23.sp,
+                                )
+                                if (trText.isNotBlank() && !trText.equals(lineText, ignoreCase = true)) {
+                                    Text(
+                                        text = trText,
+                                        color = NoctaliaColors.CyanGlow.copy(alpha = 0.85f),
+                                        fontSize = 13.sp,
+                                        lineHeight = 18.sp,
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -1474,6 +1840,51 @@ private fun LyricsPanel(
                             fontWeight = FontWeight.SemiBold,
                         )
                     }
+                }
+            }
+
+            if (player.loadingLyricsTranslation) {
+                NoctaliaGlassCard(
+                    cornerRadius = 99.dp,
+                    strong = true,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(10.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        CircularProgressIndicator(color = NoctaliaColors.CyanGlow, strokeWidth = 2.dp, modifier = Modifier.size(12.dp))
+                        Text("Traduciendo...", color = NoctaliaColors.CyanGlow, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+
+            if (shareMode && track != null && selectedIndices.isNotEmpty()) {
+                Button(
+                    onClick = {
+                        val chosen = selectedIndices.sorted().mapNotNull { i ->
+                            if (lyrics.synced.isNotEmpty()) lyrics.synced.getOrNull(i)?.text
+                            else plainLines.getOrNull(i)
+                        }
+                        shareMode = false
+                        selectedIndices = emptySet()
+                        onShareLyricsCard(track, chosen)
+                    },
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 14.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = NoctaliaColors.Cyan,
+                        contentColor = NoctaliaColors.OnCyan,
+                    ),
+                    shape = RoundedCornerShape(99.dp),
+                ) {
+                    Icon(Icons.Rounded.Share, contentDescription = null, modifier = Modifier.size(17.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Compartir tarjeta (${selectedIndices.size})", fontWeight = FontWeight.ExtraBold, fontSize = 13.sp)
                 }
             }
         }

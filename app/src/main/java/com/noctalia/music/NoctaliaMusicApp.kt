@@ -7,6 +7,7 @@ import com.noctalia.music.data.AppUpdater
 import com.noctalia.music.data.AuthStore
 import com.noctalia.music.data.GitHubCloudSync
 import com.noctalia.music.data.LibraryRepository
+import com.noctalia.music.data.LocalAudioRepository
 import com.noctalia.music.data.LyricsClient
 import com.noctalia.music.data.OfflineCacheManager
 import com.noctalia.music.data.RecommendationEngine
@@ -25,6 +26,8 @@ class NoctaliaMusicApp : Application(), ImageLoaderFactory {
     lateinit var spotifyClient: SpotifyClient
         private set
     lateinit var library: LibraryRepository
+        private set
+    lateinit var localAudio: LocalAudioRepository
         private set
     lateinit var recommendations: RecommendationEngine
         private set
@@ -50,17 +53,19 @@ class NoctaliaMusicApp : Application(), ImageLoaderFactory {
         api = YTMusicApi(authStore)
         spotifyClient = SpotifyClient(authStore, api)
         library = LibraryRepository(this)
+        localAudio = LocalAudioRepository(this)
         recommendations = RecommendationEngine(api, library)
         updater = AppUpdater(this)
         cloudSync = GitHubCloudSync(this, library)
         lyricsClient = LyricsClient()
         sponsorBlock = SponsorBlockClient()
         offlineCache = OfflineCacheManager(this, api)
-        audioEffects = AudioEffectsController()
+        audioEffects = AudioEffectsController(this, library)
         playerController = MusicPlayerController(
             this,
             api,
             library,
+            localAudio,
             recommendations,
             lyricsClient,
             sponsorBlock,
@@ -70,8 +75,9 @@ class NoctaliaMusicApp : Application(), ImageLoaderFactory {
     }
 
     /**
-     * Obliga a Coil a descargar todas las carátulas mediante `api.thumbHttpClient`,
-     * que valida HTTPS + dominios oficiales de YouTube/Google en cada salto/redirección y tope 3 MiB.
+     * Obliga a Coil a descargar todas las carátulas remotas mediante `api.thumbHttpClient`
+     * (HTTPS + dominios oficiales de YouTube/Google/Spotify, tope 3 MiB), manteniendo soporte
+     * nativo de ContentResolver para carátulas locales (`content://media/external/audio/albumart/...`).
      */
     override fun newImageLoader(): ImageLoader {
         return ImageLoader.Builder(this)

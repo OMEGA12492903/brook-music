@@ -12,6 +12,7 @@ captures/
 
 # Local machine & signing secrets (NEVER commit!)
 local.properties
+gradlew-brook
 *.jks
 *.keystore
 keystore.properties

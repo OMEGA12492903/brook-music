@@ -78,6 +78,8 @@ import com.noctalia.music.ui.components.PlayerBgStyle
 import com.noctalia.music.ui.components.TrackActionsBottomSheet
 import com.noctalia.music.ui.components.bouncyClick
 import kotlinx.coroutines.delay
+import com.noctalia.music.ui.screens.ArtistAlbumOverlay
+import com.noctalia.music.ui.screens.BrookWrappedDialog
 import com.noctalia.music.ui.screens.FullPlayerOverlay
 import com.noctalia.music.ui.screens.HomeScreen
 import com.noctalia.music.ui.screens.LibraryScreen
@@ -143,6 +145,7 @@ private fun NoctaliaRootScreen(
     val ui by vm.ui.collectAsStateWithLifecycle()
     val player by vm.playerState.collectAsStateWithLifecycle()
     val library by vm.libraryState.collectAsStateWithLifecycle()
+    val localAudio by vm.localAudioState.collectAsStateWithLifecycle()
     val offline by vm.offlineState.collectAsStateWithLifecycle()
     val audioFx by vm.audioFxState.collectAsStateWithLifecycle()
     val cloudSync by vm.cloudSyncState.collectAsStateWithLifecycle()
@@ -153,6 +156,7 @@ private fun NoctaliaRootScreen(
     var fullPlayerOpen by remember { mutableStateOf(false) }
     var showLoginDialog by remember { mutableStateOf(false) }
     var showSpotifyLoginDialog by remember { mutableStateOf(false) }
+    var showWrappedDialog by remember { mutableStateOf(false) }
     var actionSheetTrack by remember { mutableStateOf<Track?>(null) }
 
     LaunchedEffect(pendingShared) {
@@ -170,6 +174,18 @@ private fun NoctaliaRootScreen(
     val notifPermLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { }
+
+    // Permiso para escanear archivos locales de música (MP3/FLAC/M4A/OGG)
+    val localAudioPermLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            vm.refreshLocalAudio()
+            vm.showMessage("Escaneando tu música local...")
+        } else {
+            vm.showMessage("Activa el permiso de audio para cargar archivos locales.")
+        }
+    }
 
     LaunchedEffect(Unit) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -279,9 +295,17 @@ private fun NoctaliaRootScreen(
         }
     }
 
-    BackHandler(enabled = fullPlayerOpen || ui.selectedRemotePlaylist != null || currentNav != "home") {
+    BackHandler(
+        enabled = fullPlayerOpen ||
+            ui.activeAlbumPage != null ||
+            ui.activeArtistPage != null ||
+            ui.selectedRemotePlaylist != null ||
+            currentNav != "home"
+    ) {
         when {
             fullPlayerOpen -> fullPlayerOpen = false
+            ui.activeAlbumPage != null -> vm.closeAlbumPage()
+            ui.activeArtistPage != null -> vm.closeArtistPage()
             ui.selectedRemotePlaylist != null -> vm.closeRemotePlaylist()
             currentNav != "home" -> currentNav = "home"
         }
@@ -333,7 +357,7 @@ private fun NoctaliaRootScreen(
                         vm.player.addToQueue(it)
                         vm.showMessage("Añadida «${it.title}» a la cola")
                     },
-                    onToggleFavorite = { vm.library.toggleFavorite(it) },
+                    onToggleFavorite = { vm.toggleFavoriteTrack(it) },
                     onMoreTrackClick = { actionSheetTrack = it },
                     onOpenLogin = {
                         if (ui.isLoggedIn) {
@@ -365,7 +389,7 @@ private fun NoctaliaRootScreen(
                         vm.player.addToQueue(it)
                         vm.showMessage("Añadida «${it.title}» a la cola")
                     },
-                    onToggleFavorite = { vm.library.toggleFavorite(it) },
+                    onToggleFavorite = { vm.toggleFavoriteTrack(it) },
                     onMoreTrackClick = { actionSheetTrack = it },
                     onClearSearchHistory = { vm.library.clearSearchHistory() },
                 )
@@ -374,6 +398,7 @@ private fun NoctaliaRootScreen(
                     ui = ui,
                     player = player,
                     library = library,
+                    localAudio = localAudio,
                     offline = offline,
                     cloudSync = cloudSync,
                     activeTab = libraryInitialTab,
@@ -384,10 +409,18 @@ private fun NoctaliaRootScreen(
                         vm.player.addToQueue(it)
                         vm.showMessage("Añadida «${it.title}» a la cola")
                     },
-                    onToggleFavorite = { vm.library.toggleFavorite(it) },
+                    onToggleFavorite = { vm.toggleFavoriteTrack(it) },
                     onMoreTrackClick = { actionSheetTrack = it },
                     onCacheTracksOffline = { list, lbl -> vm.cacheTrackListOffline(list, lbl) },
                     onClearOfflineCache = { vm.clearOfflineCache() },
+                    onToggleAutoCacheWifi = { vm.setAutoCacheWifi(it) },
+                    onSelectAutoCacheMaxMb = { vm.setAutoCacheMaxMb(it) },
+                    onToggleAutoCacheFavorites = { vm.setAutoCacheFavorites(it) },
+                    onRequestLocalAudioPermission = {
+                        localAudioPermLauncher.launch(vm.localAudio.requiredPermission())
+                    },
+                    onRefreshLocalAudio = { vm.refreshLocalAudio() },
+                    onOpenWrapped = { showWrappedDialog = true },
                     onCreatePlaylist = { vm.library.createPlaylist(it) },
                     onDeletePlaylist = { vm.library.deletePlaylist(it) },
                     onSaveCurrentToPlaylist = { pl ->
@@ -410,8 +443,7 @@ private fun NoctaliaRootScreen(
                     onToggleBgUseCoverColors = { vm.library.updatePlayerBgUseCoverColors(it) },
                     onToggleDynamicAppTheme = { vm.library.updateDynamicAppTheme(it) },
                     onOpenArtistFromStats = { artist ->
-                        currentNav = "search"
-                        vm.onSearchQueryChanged(artist, immediate = true, mode = "artist")
+                        vm.openArtistPage(artist, fallbackName = artist)
                     },
                     onClearStats = {
                         vm.library.clearStats()
@@ -437,6 +469,37 @@ private fun NoctaliaRootScreen(
                     onCancelSpotifyImport = { vm.cancelSpotifyImport() },
                 )
             }
+            }
+
+            // Pantalla real de Artista y Álbum (debajo del MiniPlayer/Dock para controlar reproducción siempre)
+            AnimatedVisibility(
+                visible = ui.activeArtistPage != null || ui.activeAlbumPage != null,
+                enter = slideInHorizontally(tween(240, easing = FastOutSlowInEasing)) { it / 4 } + fadeIn(tween(200)),
+                exit = slideOutHorizontally(tween(200, easing = FastOutSlowInEasing)) { it / 4 } + fadeOut(tween(170)),
+            ) {
+                ArtistAlbumOverlay(
+                    artistPage = ui.activeArtistPage,
+                    loadingArtist = ui.loadingArtistPage,
+                    albumPage = ui.activeAlbumPage,
+                    loadingAlbum = ui.loadingAlbumPage,
+                    currentTrackId = player.currentTrack?.id,
+                    favoriteIds = favIds,
+                    onBack = { vm.closeArtistPage() },
+                    onPlayTrackList = { list, idx -> vm.player.playTrackList(list, idx) },
+                    onStartRadio = {
+                        vm.player.startRadioFromTrack(it)
+                        vm.showMessage("Radio iniciada desde «${it.title}»")
+                    },
+                    onAddQueue = {
+                        vm.player.addToQueue(it)
+                        vm.showMessage("Añadida «${it.title}» a la cola")
+                    },
+                    onToggleFavorite = { vm.toggleFavoriteTrack(it) },
+                    onMoreTrackClick = { actionSheetTrack = it },
+                    onOpenAlbum = { alb, art -> vm.openAlbumPage(alb, fallbackArtist = art) },
+                    onOpenRelatedArtist = { rel -> vm.openArtistPage(rel.browseId, fallbackName = rel.name) },
+                    onDownloadTracksOffline = { tracks, label -> vm.cacheTrackListOffline(tracks, label) },
+                )
             }
 
             // Mini reproductor (entra animado al poner una canción) + Dock inferior flotante estilo Noctalia
@@ -530,8 +593,7 @@ private fun NoctaliaRootScreen(
                 onToggleDynamicAppTheme = { vm.library.updateDynamicAppTheme(it) },
                 onArtistClick = { artist ->
                     fullPlayerOpen = false
-                    currentNav = "search"
-                    vm.onSearchQueryChanged(artist.substringBefore(",").trim(), immediate = true, mode = "artist")
+                    vm.openArtistPage(artist.substringBefore(",").trim(), fallbackName = artist.substringBefore(",").trim())
                 },
                 onPlayPause = { vm.player.togglePlayPause() },
                 onNext = { vm.player.skipNext() },
@@ -539,7 +601,7 @@ private fun NoctaliaRootScreen(
                 onSeek = { vm.player.seekTo(it) },
                 onToggleShuffle = { vm.player.toggleShuffle() },
                 onCycleRepeat = { vm.player.cycleRepeat() },
-                onToggleFavorite = { vm.library.toggleFavorite(it) },
+                onToggleFavorite = { vm.toggleFavoriteTrack(it) },
                 onToggleOffline = { vm.toggleOfflineTrack(it) },
                 onToggleAutoRadio = { vm.player.setAutoRadio(it) },
                 onPlayQueueIndex = { vm.player.playFromQueue(it) },
@@ -547,12 +609,18 @@ private fun NoctaliaRootScreen(
                 onMoveQueueItem = { from, to -> vm.player.moveQueueItem(from, to) },
                 onClearQueue = { vm.player.clearQueue() },
                 onSelectEqPreset = { vm.audioEffects.setPreset(it) },
+                onEqBandLevelChange = { idx, mb -> vm.audioEffects.setBandLevel(idx, mb) },
+                onResetEqBands = { vm.audioEffects.resetEqualizerBands() },
+                onTogglePerDeviceProfiles = { vm.audioEffects.setPerDeviceProfilesEnabled(it) },
+                onCrossfadeSecChange = { vm.audioEffects.setCrossfadeSec(it) },
                 onBassBoostChange = { vm.audioEffects.setBassBoost(it) },
                 onToggleNormalize = { vm.audioEffects.setNormalizeVolume(it) },
                 onToggleSponsorBlock = { vm.audioEffects.setSponsorBlock(it) },
                 onToggleSkipSilence = { vm.player.setSkipSilence(it) },
                 onToggleSmoothFade = { vm.player.setSmoothFade(it) },
                 onSetSpeedPitch = { spd, ptc -> vm.player.setPlaybackSpeedPitch(spd, ptc) },
+                onToggleLyricsTranslate = { vm.player.toggleLyricsTranslation() },
+                onShareLyricsCard = { tr, lines -> vm.shareLyricsCard(tr, lines) },
                 onSetSleepMinutes = { vm.player.setSleepTimerMinutes(it) },
                 onSetSleepEndOfTrack = { vm.player.setSleepAtEndOfTrack() },
                 onCancelSleep = { vm.player.cancelSleepTimer() },
@@ -590,6 +658,18 @@ private fun NoctaliaRootScreen(
             )
         }
 
+        // Experiencia visual Brook Wrapped
+        if (showWrappedDialog) {
+            BrookWrappedDialog(
+                library = library,
+                onDismiss = { showWrappedDialog = false },
+                onShareWrapped = { vm.shareWrappedCard() },
+                onPlayTopList = { list ->
+                    if (list.isNotEmpty()) vm.player.playTrackList(list, 0)
+                },
+            )
+        }
+
         // Menú deslizable de acciones rápidas sobre cualquier canción
         val sheetTrack = actionSheetTrack
         if (sheetTrack != null) {
@@ -618,15 +698,11 @@ private fun NoctaliaRootScreen(
                     vm.showMessage("Radio iniciada desde «${sheetTrack.title}»")
                 },
                 onOpenArtist = {
-                    currentNav = "search"
-                    vm.onSearchQueryChanged(
-                        sheetTrack.artist.substringBefore(",").trim(),
-                        immediate = true,
-                        mode = "artist",
-                    )
+                    val cleanArtist = sheetTrack.artist.substringBefore(",").trim()
+                    vm.openArtistPage(cleanArtist, fallbackName = cleanArtist)
                 },
                 onToggleFavorite = {
-                    val added = vm.library.toggleFavorite(sheetTrack)
+                    val added = vm.toggleFavoriteTrack(sheetTrack)
                     vm.showMessage(if (added) "Añadida a Favoritas" else "Quitada de Favoritas")
                 },
             )

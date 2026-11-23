@@ -10,6 +10,7 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -64,6 +65,7 @@ import androidx.compose.ui.unit.sp
 import com.noctalia.music.data.CloudSyncState
 import com.noctalia.music.data.GitHubCloudSync
 import com.noctalia.music.data.LibraryPayload
+import com.noctalia.music.data.LocalAudioState
 import com.noctalia.music.data.OfflineState
 import com.noctalia.music.data.RemotePlaylist
 import com.noctalia.music.data.SpotifyRemotePlaylist
@@ -82,6 +84,7 @@ fun LibraryScreen(
     ui: MainUiState,
     player: PlayerUiState,
     library: LibraryPayload,
+    localAudio: LocalAudioState,
     offline: OfflineState,
     cloudSync: CloudSyncState,
     activeTab: String,
@@ -93,6 +96,12 @@ fun LibraryScreen(
     onMoreTrackClick: (Track) -> Unit,
     onCacheTracksOffline: (List<Track>, String) -> Unit,
     onClearOfflineCache: () -> Unit,
+    onToggleAutoCacheWifi: (Boolean) -> Unit,
+    onSelectAutoCacheMaxMb: (Int) -> Unit,
+    onToggleAutoCacheFavorites: (Boolean) -> Unit,
+    onRequestLocalAudioPermission: () -> Unit,
+    onRefreshLocalAudio: () -> Unit,
+    onOpenWrapped: () -> Unit,
     onCreatePlaylist: (String) -> Unit,
     onDeletePlaylist: (String) -> Unit,
     onSaveCurrentToPlaylist: (String) -> Unit,
@@ -134,6 +143,7 @@ fun LibraryScreen(
     var urlInput by remember { mutableStateOf("") }
     var spotifyUrlInput by remember { mutableStateOf("") }
     var cloudTokenInput by remember { mutableStateOf("") }
+    var localFilterQuery by remember { mutableStateOf("") }
 
     val favIds = remember(library.favorites) { library.favorites.map { it.id }.toSet() }
 
@@ -264,6 +274,13 @@ fun LibraryScreen(
             }
             item {
                 NoctaliaPillChip(
+                    label = if (localAudio.tracks.isNotEmpty()) "Locales (${localAudio.tracks.size})" else "Locales",
+                    active = activeTab == "local",
+                    onClick = { onTabChange("local") },
+                )
+            }
+            item {
+                NoctaliaPillChip(
                     label = "Stats",
                     active = activeTab == "stats",
                     onClick = { onTabChange("stats") },
@@ -344,7 +361,7 @@ fun LibraryScreen(
             }
         }
 
-        val libTabOrder = mapOf("favs" to 0, "playlists" to 1, "stats" to 2, "account" to 3, "spotify" to 4, "sync" to 5)
+        val libTabOrder = mapOf("favs" to 0, "playlists" to 1, "local" to 2, "stats" to 3, "account" to 4, "spotify" to 5, "sync" to 6)
         AnimatedContent(
             targetState = activeTab,
             transitionSpec = {
@@ -528,6 +545,139 @@ fun LibraryScreen(
                 }
             }
 
+            "local" -> {
+                if (!localAudio.hasPermission) {
+                    NoctaliaGlassCard(cornerRadius = 18.dp, strong = true, modifier = Modifier.fillMaxWidth()) {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            Text(
+                                text = "Música local del móvil",
+                                color = NoctaliaColors.CyanGlow,
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                            )
+                            Text(
+                                text = "Reproduce tus archivos MP3, FLAC, M4A, OGG o WAV almacenados en tu teléfono mezclados en las mismas playlists, cola, EQ y Android Auto de Brook.",
+                                color = NoctaliaColors.TextMuted,
+                                fontSize = 13.sp,
+                                lineHeight = 18.sp,
+                            )
+                            Button(
+                                onClick = onRequestLocalAudioPermission,
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = NoctaliaColors.Cyan,
+                                    contentColor = NoctaliaColors.OnCyan,
+                                ),
+                                shape = RoundedCornerShape(14.dp),
+                            ) {
+                                Text("Conceder permiso y escanear", fontWeight = FontWeight.ExtraBold)
+                            }
+                        }
+                    }
+                } else {
+                    val filteredLocal = remember(localAudio.tracks, localFilterQuery) {
+                        val q = localFilterQuery.trim()
+                        if (q.isEmpty()) localAudio.tracks
+                        else localAudio.tracks.filter {
+                            it.title.contains(q, ignoreCase = true) ||
+                                it.artist.contains(q, ignoreCase = true) ||
+                                it.album.contains(q, ignoreCase = true)
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Button(
+                            onClick = { if (filteredLocal.isNotEmpty()) onPlayTrackList(filteredLocal, 0) },
+                            enabled = filteredLocal.isNotEmpty(),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = NoctaliaColors.Cyan,
+                                contentColor = NoctaliaColors.OnCyan,
+                            ),
+                            shape = RoundedCornerShape(99.dp),
+                        ) {
+                            Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Reproducir (${filteredLocal.size})", fontWeight = FontWeight.ExtraBold, fontSize = 12.sp)
+                        }
+                        Button(
+                            onClick = onRefreshLocalAudio,
+                            enabled = !localAudio.scanning,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = NoctaliaColors.Glass,
+                                contentColor = NoctaliaColors.TextPrimary,
+                            ),
+                            shape = RoundedCornerShape(99.dp),
+                        ) {
+                            Icon(Icons.Rounded.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text(if (localAudio.scanning) "Escaneando..." else "Actualizar", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        }
+                    }
+
+                    if (localAudio.tracks.size > 6) {
+                        OutlinedTextField(
+                            value = localFilterQuery,
+                            onValueChange = { localFilterQuery = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            placeholder = { Text("Filtrar archivos locales...", fontSize = 12.sp, color = NoctaliaColors.TextDim) },
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = NoctaliaColors.CyanGlow,
+                                unfocusedBorderColor = NoctaliaColors.BorderCyan,
+                                focusedTextColor = NoctaliaColors.TextPrimary,
+                                unfocusedTextColor = NoctaliaColors.TextPrimary,
+                            ),
+                        )
+                    }
+
+                    if (localAudio.scanning && localAudio.tracks.isEmpty()) {
+                        Box(modifier = Modifier.fillMaxWidth().padding(vertical = 28.dp), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator(color = NoctaliaColors.CyanGlow, strokeWidth = 2.5.dp)
+                        }
+                    } else if (filteredLocal.isEmpty()) {
+                        Text(
+                            text = if (localAudio.tracks.isEmpty()) {
+                                "No se encontraron archivos de música (MP3/FLAC/M4A) en el dispositivo."
+                            } else {
+                                "Sin coincidencias para «$localFilterQuery»."
+                            },
+                            color = NoctaliaColors.TextMuted,
+                            fontSize = 13.sp,
+                            modifier = Modifier.padding(top = 12.dp),
+                        )
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(bottom = 164.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            itemsIndexed(
+                                items = filteredLocal,
+                                key = { _, t -> "loc_${t.id}" },
+                                contentType = { _, _ -> "local_track" },
+                            ) { idx, track ->
+                                TrackRowItem(
+                                    track = track,
+                                    isCurrent = player.currentTrack?.id == track.id,
+                                    isFavorite = track.id in favIds,
+                                    onPlay = { onPlayTrackList(filteredLocal, idx) },
+                                    onAddQueue = { onAddQueue(track) },
+                                    onToggleFavorite = { onToggleFavorite(track) },
+                                    onMoreClick = { onMoreTrackClick(track) },
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
             "stats" -> {
                 val allStats = remember(library.stats) {
                     library.stats.values.sortedByDescending { it.listenedSec * 2 + it.playCount * 35L }
@@ -625,7 +775,21 @@ fun LibraryScreen(
                                     }
                                 }
                                 if (allStats.isNotEmpty()) {
-                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Button(
+                                            onClick = onOpenWrapped,
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = NoctaliaColors.Magenta,
+                                                contentColor = NoctaliaColors.OnMagenta,
+                                            ),
+                                            shape = RoundedCornerShape(99.dp),
+                                        ) {
+                                            Text("Ver Wrapped", fontWeight = FontWeight.ExtraBold, fontSize = 12.sp)
+                                        }
                                         Button(
                                             onClick = { onPlayTrackList(allStats.take(30).map { it.track }, 0) },
                                             colors = ButtonDefaults.buttonColors(
@@ -634,9 +798,9 @@ fun LibraryScreen(
                                             ),
                                             shape = RoundedCornerShape(99.dp),
                                         ) {
-                                            Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
-                                            Spacer(Modifier.width(4.dp))
-                                            Text("Reproducir mi Top", fontWeight = FontWeight.ExtraBold, fontSize = 12.sp)
+                                            Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(Modifier.width(2.dp))
+                                            Text("Top", fontWeight = FontWeight.ExtraBold, fontSize = 12.sp)
                                         }
                                         Text(
                                             text = "Reiniciar",
@@ -645,7 +809,7 @@ fun LibraryScreen(
                                             fontWeight = FontWeight.Bold,
                                             modifier = Modifier
                                                 .clickable(onClick = onClearStats)
-                                                .padding(horizontal = 8.dp, vertical = 6.dp),
+                                                .padding(horizontal = 6.dp, vertical = 6.dp),
                                         )
                                     }
                                 }
@@ -1557,7 +1721,7 @@ fun LibraryScreen(
                         }
                     }
 
-                    // Tarjeta de Caché Sin Conexión (Modo Avión / Metro)
+                    // Tarjeta de Caché Sin Conexión + Auto-caché inteligente en Wi-Fi
                     item {
                         NoctaliaGlassCard(cornerRadius = 18.dp, strong = true, modifier = Modifier.fillMaxWidth()) {
                             Column(
@@ -1565,17 +1729,76 @@ fun LibraryScreen(
                                 verticalArrangement = Arrangement.spacedBy(10.dp),
                             ) {
                                 Text(
-                                    text = "Modo sin conexión (Caché local)",
+                                    text = "Modo sin conexión y Auto-caché Wi-Fi",
                                     color = NoctaliaColors.CyanGlow,
                                     fontSize = 16.sp,
                                     fontWeight = FontWeight.ExtraBold,
                                 )
                                 val mb = offline.totalBytes / (1024.0 * 1024.0)
+                                val maxMb = library.settings.autoCacheMaxMb
+                                val capLabel = if (maxMb >= 1024) "${maxMb / 1024} GB" else "$maxMb MB"
                                 Text(
-                                    text = "${offline.cachedIds.size} canciones guardadas · %.1f MB en almacenamiento privado de Brook.".format(mb),
+                                    text = "${offline.cachedIds.size} canciones guardadas · %.1f MB / $capLabel".format(mb),
                                     color = NoctaliaColors.TextMuted,
                                     fontSize = 13.sp,
                                 )
+                                val usedFrac = (mb / maxMb.coerceAtLeast(100)).toFloat().coerceIn(0f, 1f)
+                                LinearProgressIndicator(
+                                    progress = { usedFrac },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    color = NoctaliaColors.CyanGlow,
+                                    trackColor = Color.White.copy(alpha = 0.14f),
+                                )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                ) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text("Auto-caché en Wi-Fi", color = NoctaliaColors.TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                        Text("Guarda automáticamente lo que escuchas en Wi-Fi", color = NoctaliaColors.TextMuted, fontSize = 11.sp)
+                                    }
+                                    Switch(
+                                        checked = library.settings.autoCacheWifi,
+                                        onCheckedChange = onToggleAutoCacheWifi,
+                                        colors = SwitchDefaults.colors(
+                                            checkedThumbColor = NoctaliaColors.OnCyan,
+                                            checkedTrackColor = NoctaliaColors.Cyan,
+                                        ),
+                                    )
+                                }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                ) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text("Auto-descargar Favoritas en Wi-Fi", color = NoctaliaColors.TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                        Text("Mantiene tus Favoritas listas sin cobertura", color = NoctaliaColors.TextMuted, fontSize = 11.sp)
+                                    }
+                                    Switch(
+                                        checked = library.settings.autoCacheFavorites,
+                                        onCheckedChange = onToggleAutoCacheFavorites,
+                                        colors = SwitchDefaults.colors(
+                                            checkedThumbColor = NoctaliaColors.OnCyan,
+                                            checkedTrackColor = NoctaliaColors.Cyan,
+                                        ),
+                                    )
+                                }
+                                Text("Límite de auto-caché", color = NoctaliaColors.TextPrimary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    items(
+                                        items = listOf(250 to "250 MB", 500 to "500 MB", 1024 to "1 GB", 2048 to "2 GB"),
+                                        key = { it.first },
+                                        contentType = { "cache_cap" },
+                                    ) { (capMb, lbl) ->
+                                        NoctaliaPillChip(
+                                            label = lbl,
+                                            active = library.settings.autoCacheMaxMb == capMb,
+                                            onClick = { onSelectAutoCacheMaxMb(capMb) },
+                                        )
+                                    }
+                                }
                                 if (offline.cachedIds.isNotEmpty()) {
                                     Button(
                                         onClick = onClearOfflineCache,

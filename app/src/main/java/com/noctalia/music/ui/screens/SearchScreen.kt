@@ -92,7 +92,11 @@ fun SearchScreen(
             singleLine = true,
             shape = RoundedCornerShape(18.dp),
             placeholder = {
-                Text("Canción, artista o álbum...", color = NoctaliaColors.TextDim, fontSize = 14.sp)
+                Text(
+                    text = if (ui.searchMode == "lyrics") "Escribe una frase que recuerdes de la letra..." else "Canción, artista o álbum...",
+                    color = NoctaliaColors.TextDim,
+                    fontSize = 14.sp,
+                )
             },
             leadingIcon = {
                 Icon(Icons.Rounded.Search, contentDescription = null, tint = NoctaliaColors.CyanGlow)
@@ -185,13 +189,18 @@ fun SearchScreen(
             }
         }
 
-        // Filtros de búsqueda: Canciones / Artistas / Todo (Álbumes y Remixes)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf(
-                "songs" to "Canciones",
-                "artist" to "Artista",
-                "all" to "Todo / Remixes",
-            ).forEach { (mode, label) ->
+        // Filtros de búsqueda: Canciones / Artistas / Por letra / Todo
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(
+                items = listOf(
+                    "songs" to "Canciones",
+                    "artist" to "Artista",
+                    "lyrics" to "Por letra",
+                    "all" to "Todo / Remixes",
+                ),
+                key = { it.first },
+                contentType = { "search_mode" },
+            ) { (mode, label) ->
                 NoctaliaPillChip(
                     label = label,
                     active = ui.searchMode == mode,

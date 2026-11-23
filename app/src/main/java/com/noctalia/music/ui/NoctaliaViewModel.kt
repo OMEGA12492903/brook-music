@@ -3,21 +3,30 @@ package com.noctalia.music.ui
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.noctalia.music.NoctaliaMusicApp
+import com.noctalia.music.data.AlbumPageData
 import com.noctalia.music.data.AppUpdateInfo
+import com.noctalia.music.data.ArtistAlbumItem
 import com.noctalia.music.data.ArtistMixCard
+import com.noctalia.music.data.ArtistPageData
 import com.noctalia.music.data.CloudSyncState
 import com.noctalia.music.data.HomeRecommendations
 import com.noctalia.music.data.LibraryPayload
+import com.noctalia.music.data.LocalAudioState
 import com.noctalia.music.data.OfflineState
 import com.noctalia.music.data.RemotePlaylist
 import com.noctalia.music.data.SecurityValidators
+import com.noctalia.music.data.ShareCardRenderer
 import com.noctalia.music.data.SpotifyCollection
 import com.noctalia.music.data.SpotifyImportProgress
 import com.noctalia.music.data.SpotifyRemotePlaylist
 import com.noctalia.music.data.Track
 import com.noctalia.music.player.AudioFxState
 import com.noctalia.music.player.PlayerUiState
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -41,10 +50,14 @@ data class MainUiState(
     val homeRecommendations: HomeRecommendations = HomeRecommendations(),
     val loadingHome: Boolean = false,
     val searchQuery: String = "",
-    val searchMode: String = "songs", // "songs" | "all" | "artist"
+    val searchMode: String = "songs", // "songs" | "artist" | "lyrics" | "all"
     val searchSuggestions: List<String> = emptyList(),
     val searchResults: List<Track> = emptyList(),
     val searching: Boolean = false,
+    val activeArtistPage: ArtistPageData? = null,
+    val loadingArtistPage: Boolean = false,
+    val activeAlbumPage: AlbumPageData? = null,
+    val loadingAlbumPage: Boolean = false,
     val checkingUpdate: Boolean = false,
     val downloadingUpdate: Boolean = false,
     val downloadProgress: Float = 0f,
@@ -59,15 +72,18 @@ class NoctaliaViewModel : ViewModel() {
     val api = app.api
     val spotify = app.spotifyClient
     val library = app.library
+    val localAudio = app.localAudio
     val recommendations = app.recommendations
     val updater = app.updater
     val cloudSync = app.cloudSync
+    val lyricsClient = app.lyricsClient
     val offlineCache = app.offlineCache
     val audioEffects = app.audioEffects
     val player = app.playerController
 
     val playerState: StateFlow<PlayerUiState> = player.state
     val libraryState: StateFlow<LibraryPayload> = library.state
+    val localAudioState: StateFlow<LocalAudioState> = localAudio.state
     val offlineState: StateFlow<OfflineState> = offlineCache.state
     val audioFxState: StateFlow<AudioFxState> = audioEffects.state
     val cloudSyncState: StateFlow<CloudSyncState> = cloudSync.state
@@ -85,6 +101,10 @@ class NoctaliaViewModel : ViewModel() {
     private var suggestJob: Job? = null
     private var spotifyImportJob: Job? = null
     private var homeRefreshJob: Job? = null
+    private var artistPageJob: Job? = null
+    private var albumPageJob: Job? = null
+    private var autoCacheFavJob: Job? = null
+    private val artistHistoryStack = ArrayDeque<ArtistPageData>()
 
     init {
         refreshHome(forceRefresh = false)
@@ -93,6 +113,9 @@ class NoctaliaViewModel : ViewModel() {
         }
         if (authStore.isSpotifyLoggedIn()) {
             refreshSpotifyAccount(silent = true)
+        }
+        if (localAudio.checkPermission()) {
+            refreshLocalAudio()
         }
     }
 
@@ -160,8 +183,207 @@ class NoctaliaViewModel : ViewModel() {
         searchJob = viewModelScope.launch {
             if (!immediate) delay(420L)
             _ui.update { it.copy(searching = true) }
-            val items = api.search(trimmed, limit = 20, mode = nextMode)
+            val items = if (nextMode == "lyrics") {
+                searchByLyricsPhrase(trimmed)
+            } else {
+                api.search(trimmed, limit = 20, mode = nextMode)
+            }
             _ui.update { it.copy(searchResults = items, searching = false) }
+        }
+    }
+
+    private suspend fun searchByLyricsPhrase(phrase: String): List<Track> = coroutineScope {
+        val hits = lyricsClient.searchTracksByLyricPhrase(phrase, limit = 7)
+        if (hits.isNotEmpty()) {
+            val resolved = hits.map { hit ->
+                async(Dispatchers.IO) {
+                    api.search("${hit.trackName} ${hit.artistName}", limit = 2, mode = "songs").firstOrNull()
+                }
+            }.awaitAll().filterNotNull().distinctBy { it.id }
+            if (resolved.isNotEmpty()) return@coroutineScope resolved
+        }
+        api.search("$phrase letra", limit = 16, mode = "songs")
+    }
+
+    // ─── PÁGINA REAL DE ARTISTA Y ÁLBUM ───
+    fun openArtistPage(nameOrBrowseId: String, fallbackName: String = "") {
+        val clean = nameOrBrowseId.trim()
+        if (clean.isEmpty()) return
+        _ui.value.activeArtistPage?.let { prev ->
+            if (prev.browseId != clean && !prev.name.equals(clean, ignoreCase = true)) {
+                artistHistoryStack.addLast(prev)
+                while (artistHistoryStack.size > 8) artistHistoryStack.removeFirst()
+            }
+        }
+        artistPageJob?.cancel()
+        _ui.update {
+            it.copy(
+                activeAlbumPage = null,
+                loadingAlbumPage = false,
+                loadingArtistPage = true,
+                activeArtistPage = ArtistPageData(
+                    browseId = if (clean.startsWith("UC")) clean else "",
+                    name = fallbackName.ifBlank { if (clean.startsWith("UC")) "Cargando artista..." else clean },
+                ),
+            )
+        }
+        artistPageJob = viewModelScope.launch {
+            val data = api.fetchArtistPage(clean, fallbackName = fallbackName)
+            if (data != null) {
+                _ui.update { it.copy(activeArtistPage = data, loadingArtistPage = false) }
+            } else {
+                _ui.update { it.copy(activeArtistPage = null, loadingArtistPage = false) }
+                showMessage("No se pudo abrir la ficha del artista.")
+            }
+        }
+    }
+
+    fun openAlbumPage(album: ArtistAlbumItem, fallbackArtist: String = "") {
+        albumPageJob?.cancel()
+        _ui.update {
+            it.copy(
+                loadingAlbumPage = true,
+                activeAlbumPage = AlbumPageData(
+                    browseId = album.browseId,
+                    title = album.title,
+                    artist = fallbackArtist,
+                    year = album.year,
+                    thumb = album.thumb,
+                ),
+            )
+        }
+        albumPageJob = viewModelScope.launch {
+            val data = api.fetchAlbumPage(
+                browseId = album.browseId,
+                fallbackTitle = album.title,
+                fallbackArtist = fallbackArtist,
+                fallbackThumb = album.thumb,
+            )
+            if (data != null && data.tracks.isNotEmpty()) {
+                _ui.update { it.copy(activeAlbumPage = data, loadingAlbumPage = false) }
+            } else {
+                _ui.update { it.copy(activeAlbumPage = null, loadingAlbumPage = false) }
+                showMessage("No se pudieron cargar las canciones de este álbum.")
+            }
+        }
+    }
+
+    fun closeAlbumPage() {
+        albumPageJob?.cancel()
+        _ui.update { it.copy(activeAlbumPage = null, loadingAlbumPage = false) }
+    }
+
+    fun closeArtistPage() {
+        artistPageJob?.cancel()
+        if (_ui.value.activeAlbumPage != null) {
+            closeAlbumPage()
+            return
+        }
+        if (artistHistoryStack.isNotEmpty()) {
+            val prev = artistHistoryStack.removeLast()
+            _ui.update { it.copy(activeArtistPage = prev, loadingArtistPage = false) }
+        } else {
+            _ui.update { it.copy(activeArtistPage = null, loadingArtistPage = false) }
+        }
+    }
+
+    // ─── ARCHIVOS LOCALES DEL TELÉFONO ───
+    fun refreshLocalAudio() {
+        viewModelScope.launch {
+            localAudio.refresh()
+        }
+    }
+
+    // ─── AUTO-CACHÉ INTELIGENTE EN WI-FI ───
+    fun setAutoCacheWifi(enabled: Boolean) {
+        library.updateAutoCacheWifi(enabled)
+        showMessage(if (enabled) "Auto-caché en Wi-Fi activado." else "Auto-caché en Wi-Fi desactivado.")
+    }
+
+    fun setAutoCacheMaxMb(maxMb: Int) {
+        library.updateAutoCacheMaxMb(maxMb)
+        val favIds = library.state.value.favorites.map { it.id }.toSet()
+        viewModelScope.launch(Dispatchers.IO) {
+            offlineCache.evictAutoCacheIfNeeded(maxMb.toLong() * 1024L * 1024L, favIds)
+        }
+        showMessage("Límite de caché ajustado a ${if (maxMb >= 1024) "${maxMb / 1024} GB" else "$maxMb MB"}.")
+    }
+
+    fun setAutoCacheFavorites(enabled: Boolean) {
+        library.updateAutoCacheFavorites(enabled)
+        if (enabled) {
+            syncFavoritesOfflineIfWifi()
+            showMessage("Favoritas se guardarán automáticamente en Wi-Fi.")
+        } else {
+            autoCacheFavJob?.cancel()
+            showMessage("Auto-descarga de Favoritas desactivada.")
+        }
+    }
+
+    fun toggleFavoriteTrack(track: Track): Boolean {
+        val added = library.toggleFavorite(track)
+        if (added && library.state.value.settings.autoCacheFavorites && SecurityValidators.isValidVideoId(track.id)) {
+            val maxMb = library.state.value.settings.autoCacheMaxMb
+            val favIds = library.state.value.favorites.map { it.id }.toSet()
+            viewModelScope.launch {
+                offlineCache.autoCacheIfWifi(track, maxMb = maxMb, protectedIds = favIds, pin = true)
+            }
+        }
+        return added
+    }
+
+    private fun syncFavoritesOfflineIfWifi() {
+        if (!offlineCache.isOnUnmeteredWifi()) return
+        autoCacheFavJob?.cancel()
+        autoCacheFavJob = viewModelScope.launch {
+            val settings = library.state.value.settings
+            val favs = library.state.value.favorites
+                .filter { SecurityValidators.isValidVideoId(it.id) && !offlineCache.isCached(it.id) }
+                .take(25)
+            val favIds = library.state.value.favorites.map { it.id }.toSet()
+            for (t in favs) {
+                if (!library.state.value.settings.autoCacheFavorites) break
+                if (!offlineCache.isOnUnmeteredWifi()) break
+                offlineCache.autoCacheIfWifi(t, maxMb = settings.autoCacheMaxMb, protectedIds = favIds, pin = true)
+            }
+        }
+    }
+
+    // ─── COMPARTIR TARJETA DE LETRA Y BROOK WRAPPED ───
+    fun shareLyricsCard(track: Track, lines: List<String>) {
+        if (lines.isEmpty()) return
+        showMessage("Generando tarjeta de letra...")
+        viewModelScope.launch {
+            val ok = ShareCardRenderer.shareLyricsCard(app, track, lines)
+            if (!ok) showMessage("No se pudo generar la tarjeta de letra.")
+        }
+    }
+
+    fun shareWrappedCard() {
+        val stats = library.state.value.stats.values
+            .sortedByDescending { it.listenedSec * 2 + it.playCount * 30L }
+        if (stats.isEmpty()) {
+            showMessage("Escucha algunas canciones primero para generar tu Wrapped.")
+            return
+        }
+        val totalMin = (stats.sumOf { it.listenedSec } / 60L).coerceAtLeast(1L)
+        val totalPlays = stats.sumOf { it.playCount }
+        val topArtist = stats
+            .groupBy { it.track.artist.substringBefore(",").trim().ifBlank { "Artista" } }
+            .map { (name, list) -> name to list.sumOf { it.playCount } }
+            .maxByOrNull { it.second } ?: ("Tu artista" to 0)
+
+        showMessage("Generando tu tarjeta Brook Wrapped...")
+        viewModelScope.launch {
+            val ok = ShareCardRenderer.shareWrappedCard(
+                context = app,
+                totalMinutes = totalMin,
+                totalPlays = totalPlays,
+                topArtistName = topArtist.first,
+                topArtistPlays = topArtist.second,
+                topSongs = stats.take(5),
+            )
+            if (!ok) showMessage("No se pudo compartir la tarjeta Wrapped.")
         }
     }
 
@@ -218,6 +440,10 @@ class NoctaliaViewModel : ViewModel() {
     }
 
     fun toggleOfflineTrack(track: Track) {
+        if (SecurityValidators.isLocalTrackId(track.id)) {
+            showMessage("«${track.title}» ya está en el almacenamiento local de tu móvil.")
+            return
+        }
         viewModelScope.launch {
             if (offlineCache.isCached(track.id)) {
                 offlineCache.removeTrack(track.id)

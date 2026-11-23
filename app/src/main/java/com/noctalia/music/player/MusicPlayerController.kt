@@ -15,6 +15,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.noctalia.music.data.LibraryRepository
+import com.noctalia.music.data.LocalAudioRepository
 import com.noctalia.music.data.LyricsClient
 import com.noctalia.music.data.LyricsResult
 import com.noctalia.music.data.OfflineCacheManager
@@ -25,6 +26,9 @@ import com.noctalia.music.data.SponsorBlockClient
 import com.noctalia.music.data.Track
 import com.noctalia.music.data.YTMusicApi
 import com.noctalia.music.widget.BrookWidgetProvider
+import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.sin
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -54,6 +58,10 @@ data class PlayerUiState(
     val autoRadio: Boolean = true,
     val lyrics: LyricsResult = LyricsResult(),
     val loadingLyrics: Boolean = false,
+    val lyricsTranslateEnabled: Boolean = false,
+    val loadingLyricsTranslation: Boolean = false,
+    val translatedLyricsLines: List<String> = emptyList(),
+    val lyricsAlreadySpanish: Boolean = false,
     val sleepRemainingSec: Int? = null,
     val sleepEndOfTrack: Boolean = false,
     val sponsorSkippedNotice: String? = null,
@@ -64,6 +72,7 @@ class MusicPlayerController(
     private val context: Context,
     private val api: YTMusicApi,
     private val library: LibraryRepository,
+    private val localAudio: LocalAudioRepository,
     private val recommendations: RecommendationEngine,
     private val lyricsClient: LyricsClient,
     private val sponsorBlock: SponsorBlockClient,
@@ -87,8 +96,10 @@ class MusicPlayerController(
     )
     val state: StateFlow<PlayerUiState> = _state.asStateFlow()
 
-    // Referencia directa al ExoPlayer dentro de NoctaliaPlaybackService (mismo proceso, 0 latencia IPC)
+    // Referencias directas a ambos decks ExoPlayer dentro de NoctaliaPlaybackService (0 latencia IPC + Crossfade real)
     private var servicePlayer: ExoPlayer? = null
+    private var standbyPlayer: ExoPlayer? = null
+    private var onServiceDeckSwapped: ((ExoPlayer) -> Unit)? = null
     private var mediaController: MediaController? = null
 
     private var playJob: Job? = null
@@ -96,10 +107,12 @@ class MusicPlayerController(
     private var radioSeedVideoId: String? = null
     private var pendingPlayRadioWhenReady = false
     private var lyricsJob: Job? = null
+    private var lyricsTranslateJob: Job? = null
     private var sponsorJob: Job? = null
     private var sleepJob: Job? = null
     private var prefetchJob: Job? = null
     private var fadeJob: Job? = null
+    private var crossfadeJob: Job? = null
     private var controllerConnectJob: Job? = null
     private var smartShuffleFetchJob: Job? = null
 
@@ -112,6 +125,9 @@ class MusicPlayerController(
     private var retriedCurrent = false
     private var consecutiveAutoErrors = 0
     private var isFadingOutToPause = false
+    private var isCrossfading = false
+    private var crossfadeTriggeredForTrackId: String? = null
+    private var autoCachedForTrackId: String? = null
     private var prefetchedTrackId: String? = null
     private var lastPrefetchFailedId: String? = null
     private var lastPrefetchFailedAtMs: Long = 0L
@@ -160,9 +176,19 @@ class MusicPlayerController(
     }
 
     /**
-     * Llamado por `NoctaliaPlaybackService.onCreate()` para enlazar directamente el ExoPlayer real.
-     * Evita depender únicamente de Binder IPC en segundo plano o tras cerrar la Activity.
+     * Llamado por `NoctaliaPlaybackService.onCreate()` para enlazar ambos decks ExoPlayer reales
+     * (reproducción continua sin cortes + Crossfade solapado real entre pistas).
      */
+    fun attachServiceDecks(
+        active: ExoPlayer,
+        standby: ExoPlayer,
+        onDeckSwapped: (ExoPlayer) -> Unit,
+    ) {
+        standbyPlayer = standby
+        onServiceDeckSwapped = onDeckSwapped
+        attachServicePlayer(active)
+    }
+
     fun attachServicePlayer(player: ExoPlayer) {
         if (servicePlayer === player) return
         try {
@@ -181,15 +207,36 @@ class MusicPlayerController(
 
     fun detachServicePlayer(player: ExoPlayer?) {
         if (player != null && servicePlayer !== player) return
+        cancelActiveCrossfade()
         try {
             servicePlayer?.removeListener(playerListener)
         } catch (_: Throwable) {
         }
         servicePlayer = null
+        standbyPlayer = null
+        onServiceDeckSwapped = null
         isTransitioningNext = false
         releaseTransitionWakeLock()
         _state.update { it.copy(isPlaying = false, isLoading = false) }
         BrookWidgetProvider.updateAllWidgets(context)
+    }
+
+    private fun cancelActiveCrossfade() {
+        crossfadeJob?.cancel()
+        crossfadeJob = null
+        if (isCrossfading) {
+            isCrossfading = false
+            try {
+                standbyPlayer?.stop()
+                standbyPlayer?.clearMediaItems()
+                standbyPlayer?.volume = 1f
+            } catch (_: Throwable) {
+            }
+            try {
+                servicePlayer?.volume = 1f
+            } catch (_: Throwable) {
+            }
+        }
     }
 
     /**
@@ -318,8 +365,8 @@ class MusicPlayerController(
                 return
             }
 
-            // 3. Reintento automático de la pista actual renovando visitorData + HLS solo-audio
-            if (cur != null && !retriedCurrent) {
+            // 3. Reintento automático de la pista actual renovando visitorData + HLS solo-audio (solo YouTube)
+            if (cur != null && !retriedCurrent && SecurityValidators.isValidVideoId(cur.id)) {
                 retriedCurrent = true
                 isTransitioningNext = true
                 acquireTransitionWakeLock()
@@ -568,9 +615,14 @@ class MusicPlayerController(
             resolvedUri = explicitUri
             resolvedIsHls = isHls
         } else {
-            val localFile = offlineCache.getLocalFile(track.id)
-            val cached = api.getCachedStream(track.id, preferHls = false)
+            val localMediaId = SecurityValidators.extractLocalMediaId(track.id)
+            val localFile = if (localMediaId == null) offlineCache.getLocalFile(track.id) else null
+            val cached = if (localMediaId == null) api.getCachedStream(track.id, preferHls = false) else null
             when {
+                localMediaId != null -> {
+                    resolvedUri = NoctaliaPlaybackService.buildBrookLocalUri(localMediaId)
+                    resolvedIsHls = false
+                }
                 localFile != null -> {
                     resolvedUri = Uri.fromFile(localFile)
                     resolvedIsHls = false
@@ -653,6 +705,7 @@ class MusicPlayerController(
 
     private fun prefetchNextInQueue(explicitNext: Track? = null) {
         val next = explicitNext ?: computeNextTrackForPreload() ?: return
+        if (SecurityValidators.isLocalTrackId(next.id)) return
         if (offlineCache.isCached(next.id)) return
         // No cancelar un prefetch ya en vuelo para la misma pista ni reintentar en bucle si acaba de fallar
         if (next.id == prefetchedTrackId && (prefetchJob?.isActive == true || api.getCachedStream(next.id) != null)) {
@@ -784,8 +837,11 @@ class MusicPlayerController(
         preEndSyncedForTrackId = null
         prefetchedTrackId = null
         plannedNextTrackId = null
+        crossfadeTriggeredForTrackId = null
+        autoCachedForTrackId = null
 
         val quality = when {
+            SecurityValidators.isLocalTrackId(nextTrack.id) -> localAudio.resolveQualityLabel(nextTrack.id)
             offlineCache.isCached(nextTrack.id) -> "OFFLINE · OPUS"
             else -> api.getCachedStream(nextTrack.id)?.qualityLabel ?: _state.value.qualityLabel
         }
@@ -806,6 +862,9 @@ class MusicPlayerController(
                 qualityLabel = quality,
                 lyrics = LyricsResult(),
                 loadingLyrics = true,
+                loadingLyricsTranslation = false,
+                translatedLyricsLines = emptyList(),
+                lyricsAlreadySpanish = false,
                 sponsorSkippedNotice = null,
                 errorMsg = null,
             )
@@ -816,19 +875,65 @@ class MusicPlayerController(
         launchMetadataJobsFor(nextTrack)
     }
 
+    fun toggleLyricsTranslation() {
+        val nextEnabled = !_state.value.lyricsTranslateEnabled
+        _state.update {
+            it.copy(
+                lyricsTranslateEnabled = nextEnabled,
+                loadingLyricsTranslation = false,
+            )
+        }
+        if (nextEnabled) {
+            triggerLyricsTranslationIfNeeded()
+        } else {
+            lyricsTranslateJob?.cancel()
+        }
+    }
+
+    private fun triggerLyricsTranslationIfNeeded() {
+        val st = _state.value
+        val cur = st.currentTrack ?: return
+        if (!st.lyricsTranslateEnabled || !st.lyrics.hasLyrics) return
+        val sourceLines = if (st.lyrics.synced.isNotEmpty()) {
+            st.lyrics.synced.map { it.text }
+        } else {
+            st.lyrics.plain.lines().map { it.trim() }.filter { it.isNotEmpty() }
+        }
+        if (sourceLines.isEmpty()) return
+
+        lyricsTranslateJob?.cancel()
+        lyricsTranslateJob = scope.launch {
+            _state.update { it.copy(loadingLyricsTranslation = true) }
+            val tr = lyricsClient.translateLyricsToSpanish(cur.id, sourceLines)
+            if (_state.value.currentTrack?.id == cur.id) {
+                _state.update {
+                    it.copy(
+                        loadingLyricsTranslation = false,
+                        translatedLyricsLines = tr.lines,
+                        lyricsAlreadySpanish = tr.alreadySpanish,
+                    )
+                }
+            }
+        }
+    }
+
     private fun launchMetadataJobsFor(clean: Track) {
-        // Cargar letras sincronizadas en paralelo
+        // Cargar letras sincronizadas en paralelo (funciona tanto en YouTube como en archivos locales!)
         lyricsJob?.cancel()
+        lyricsTranslateJob?.cancel()
         lyricsJob = scope.launch {
             val res = lyricsClient.fetchLyrics(clean)
             if (_state.value.currentTrack?.id == clean.id) {
                 _state.update { it.copy(lyrics = res, loadingLyrics = false) }
+                if (_state.value.lyricsTranslateEnabled && res.hasLyrics) {
+                    triggerLyricsTranslationIfNeeded()
+                }
             }
         }
 
-        // Cargar segmentos SponsorBlock en paralelo
+        // Cargar segmentos SponsorBlock en paralelo (solo para YouTube)
         sponsorJob?.cancel()
-        if (audioEffects.state.value.sponsorBlockEnabled) {
+        if (audioEffects.state.value.sponsorBlockEnabled && SecurityValidators.isValidVideoId(clean.id)) {
             sponsorJob = scope.launch {
                 val segs = sponsorBlock.fetchSkipSegments(clean.id)
                 if (_state.value.currentTrack?.id == clean.id) {
@@ -1004,6 +1109,44 @@ class MusicPlayerController(
                             syncNextMediaItemInPlayer(alsoPrefetch = true)
                         }
 
+                        // Auto-caché inteligente en Wi-Fi tras escuchar >= 10s (evita cachear canciones saltadas)
+                        if (pos >= 10_000L &&
+                            autoCachedForTrackId != curTrack.id &&
+                            SecurityValidators.isValidVideoId(curTrack.id)
+                        ) {
+                            val settings = library.state.value.settings
+                            if (settings.autoCacheWifi) {
+                                autoCachedForTrackId = curTrack.id
+                                val favIds = library.state.value.favorites.map { it.id }.toSet()
+                                scope.launch {
+                                    offlineCache.autoCacheIfWifi(
+                                        track = curTrack,
+                                        maxMb = settings.autoCacheMaxMb,
+                                        protectedIds = favIds,
+                                        pin = curTrack.id in favIds && settings.autoCacheFavorites,
+                                    )
+                                }
+                            }
+                        }
+
+                        // Crossfade solapado real entre pistas usando doble deck ExoPlayer
+                        val cfSec = audioEffects.state.value.crossfadeSec
+                        val remainingMs = dur - pos
+                        if (cfSec in 1..10 &&
+                            !isCrossfading &&
+                            crossfadeTriggeredForTrackId != curTrack.id &&
+                            !_state.value.sleepEndOfTrack &&
+                            _state.value.repeatMode != RepeatMode.TRACK &&
+                            dur >= (cfSec * 1000L + 6_000L) &&
+                            remainingMs in 600L..(cfSec * 1000L + 350L)
+                        ) {
+                            val nextCand = computeNextTrackForPreload()?.takeIf { it.id !in failedPreloadIds }
+                            if (nextCand != null && servicePlayer != null && standbyPlayer != null) {
+                                crossfadeTriggeredForTrackId = curTrack.id
+                                startRealCrossfade(curTrack, nextCand, remainingMs.coerceIn(800L, cfSec * 1000L))
+                            }
+                        }
+
                         val now = System.currentTimeMillis()
                         if (now - lastSnapshotSavedMs >= 8_000L) {
                             library.savePlaybackSnapshot(curTrack, pos, _state.value.queue)
@@ -1024,6 +1167,192 @@ class MusicPlayerController(
         }
     }
 
+    /**
+     * Crossfade solapado real entre pistas usando el segundo deck ExoPlayer (`standbyPlayer`) con curva
+     * de potencia constante (cos/sin) para mantener el volumen percibido uniforme durante la mezcla.
+     */
+    private fun startRealCrossfade(
+        outgoingTrack: Track,
+        incomingTrack: Track,
+        fadeWindowMs: Long,
+    ) {
+        val outgoing = servicePlayer ?: return
+        val incoming = standbyPlayer ?: return
+        if (isCrossfading) return
+
+        isCrossfading = true
+        isTransitioningNext = true
+        acquireTransitionWakeLock(timeoutMs = (fadeWindowMs + 15_000L).coerceAtMost(35_000L))
+
+        crossfadeJob?.cancel()
+        crossfadeJob = scope.launch {
+            try {
+                // Preparar pista entrante en el deck secundario en silencio (volume = 0f)
+                incoming.stop()
+                incoming.clearMediaItems()
+                applySpeedPitchTo(incoming)
+                incoming.repeatMode = Player.REPEAT_MODE_OFF
+                incoming.volume = 0f
+                incoming.setMediaItem(buildMediaItemForTrack(incomingTrack))
+                incoming.prepare()
+                incoming.play()
+
+                // Esperar hasta 2.5s a que el deck entrante esté listo para evitar silencios
+                var waitedMs = 0L
+                while (waitedMs < 2500L) {
+                    if (!isCrossfading || _state.value.currentTrack?.id != outgoingTrack.id || !outgoing.isPlaying) {
+                        abortCrossfade(outgoing, incoming)
+                        return@launch
+                    }
+                    if (incoming.playerError != null) {
+                        abortCrossfade(outgoing, incoming)
+                        return@launch
+                    }
+                    if (incoming.playbackState == Player.STATE_READY) break
+                    delay(50L)
+                    waitedMs += 50L
+                }
+                if (incoming.playbackState != Player.STATE_READY) {
+                    abortCrossfade(outgoing, incoming)
+                    return@launch
+                }
+
+                // Retirar el índice 1 del deck saliente para que no dispare una segunda reproducción paralela
+                try {
+                    if (outgoing.mediaItemCount > 1) {
+                        outgoing.removeMediaItems(1, outgoing.mediaItemCount)
+                    }
+                } catch (_: Throwable) {
+                }
+
+                // Mezcla solapada real con curva equal-power (cos / sin)
+                val outDur = outgoing.duration.takeIf { it > 0 } ?: (outgoingTrack.duration * 1000L)
+                val remNow = (outDur - outgoing.currentPosition).coerceAtLeast(800L)
+                val mixMs = minOf(fadeWindowMs, remNow).coerceIn(800L, 10_000L)
+                val steps = (mixMs / 40L).toInt().coerceIn(12, 250)
+                val stepDelay = (mixMs / steps).coerceAtLeast(25L)
+
+                for (i in 1..steps) {
+                    if (!isCrossfading || _state.value.currentTrack?.id != outgoingTrack.id) {
+                        abortCrossfade(outgoing, incoming)
+                        return@launch
+                    }
+                    val t = i.toFloat() / steps.toFloat()
+                    val angle = t * (PI / 2.0)
+                    outgoing.volume = cos(angle).toFloat().coerceIn(0f, 1f)
+                    incoming.volume = sin(angle).toFloat().coerceIn(0f, 1f)
+                    delay(stepDelay)
+                }
+
+                // Finalizar mezcla: detener deck saliente e intercambiar roles en MediaSession + AudioFX
+                try {
+                    outgoing.removeListener(playerListener)
+                    outgoing.stop()
+                    outgoing.clearMediaItems()
+                    outgoing.volume = 1f
+                } catch (_: Throwable) {
+                }
+
+                incoming.volume = 1f
+                servicePlayer = incoming
+                standbyPlayer = outgoing
+                incoming.addListener(playerListener)
+                syncRepeatModeOn(incoming)
+                applySpeedPitchTo(incoming)
+                onServiceDeckSwapped?.invoke(incoming)
+
+                // Actualizar cola, historial y metadatos para `incomingTrack`
+                val st = _state.value
+                val qIdx = st.queue.indexOfFirst { it.id == incomingTrack.id }
+                val updatedQueue = if (qIdx >= 0) {
+                    if (qIdx < manualQueueCount) manualQueueCount = (manualQueueCount - 1).coerceAtLeast(0)
+                    st.queue.toMutableList().apply { removeAt(qIdx) }
+                } else {
+                    st.queue
+                }
+                manualQueueCount = manualQueueCount.coerceIn(0, updatedQueue.size)
+
+                if (completedRecordedForTrackId != outgoingTrack.id) {
+                    completedRecordedForTrackId = outgoingTrack.id
+                    library.recordTrackCompletion(outgoingTrack)
+                }
+                history.addLast(outgoingTrack)
+                while (history.size > 50) history.removeFirst()
+
+                isCrossfading = false
+                isTransitioningNext = false
+                releaseTransitionWakeLock()
+
+                commitTrackMetadataChange(incomingTrack, updatedQueue)
+                if (_state.value.shuffle && _state.value.autoRadio && manualQueueCount == 0) {
+                    onShuffleTrackAdvanced(incomingTrack)
+                }
+                if (_state.value.autoRadio && _state.value.queue.isEmpty()) {
+                    prefetchRadio(incomingTrack.id, playImmediately = false)
+                }
+                syncNextMediaItemInPlayer(alsoPrefetch = true)
+            } catch (_: Throwable) {
+                abortCrossfade(outgoing, incoming)
+            }
+        }
+    }
+
+    private fun abortCrossfade(outgoing: ExoPlayer, incoming: ExoPlayer) {
+        isCrossfading = false
+        isTransitioningNext = false
+        releaseTransitionWakeLock()
+        try {
+            incoming.stop()
+            incoming.clearMediaItems()
+            incoming.volume = 1f
+        } catch (_: Throwable) {
+        }
+        try {
+            outgoing.volume = 1f
+        } catch (_: Throwable) {
+        }
+        syncNextMediaItemInPlayer(alsoPrefetch = false)
+    }
+
+    /**
+     * Reproducción segura invocada desde Android Auto / MediaLibraryService usando únicamente
+     * IDs del catálogo interno de Brook (Favoritas, Recientes, Playlists, Locales o búsqueda de voz).
+     */
+    fun playFromAndroidAuto(mediaId: String, searchPool: List<Track> = emptyList()) {
+        val lib = library.state.value
+        when {
+            mediaId.startsWith("aa_fav:") -> {
+                val tid = mediaId.removePrefix("aa_fav:")
+                val idx = lib.favorites.indexOfFirst { it.id == tid }
+                if (idx >= 0) playTrackList(lib.favorites, idx)
+            }
+            mediaId.startsWith("aa_rec:") -> {
+                val tid = mediaId.removePrefix("aa_rec:")
+                val idx = lib.recent.indexOfFirst { it.id == tid }
+                if (idx >= 0) playTrackList(lib.recent, idx)
+            }
+            mediaId.startsWith("aa_pl:") -> {
+                val payload = mediaId.removePrefix("aa_pl:")
+                val plName = payload.substringBefore("|")
+                val tid = payload.substringAfter("|", "")
+                val tracks = lib.playlists[plName].orEmpty()
+                val idx = tracks.indexOfFirst { it.id == tid }
+                if (idx >= 0) playTrackList(tracks, idx)
+            }
+            mediaId.startsWith("aa_loc:") -> {
+                val tid = mediaId.removePrefix("aa_loc:")
+                val tracks = localAudio.state.value.tracks
+                val idx = tracks.indexOfFirst { it.id == tid }
+                if (idx >= 0) playTrackList(tracks, idx)
+            }
+            mediaId.startsWith("aa_sr:") -> {
+                val tid = mediaId.removePrefix("aa_sr:")
+                val found = searchPool.firstOrNull { it.id == tid }
+                if (found != null) playTrack(found, pushHistory = true)
+            }
+        }
+    }
+
     fun playTrack(
         track: Track,
         pushHistory: Boolean = true,
@@ -1032,6 +1361,7 @@ class MusicPlayerController(
         startPositionMs: Long = 0L,
     ) {
         val clean = SecurityValidators.sanitizeTrack(track) ?: return
+        cancelActiveCrossfade()
         val prev = _state.value.currentTrack
         if (pushHistory && prev != null && prev.id != clean.id) {
             history.addLast(prev)
@@ -1053,9 +1383,12 @@ class MusicPlayerController(
         failedPreloadIds.clear()
         preEndSyncedForTrackId = null
         prefetchedTrackId = null
+        crossfadeTriggeredForTrackId = null
+        autoCachedForTrackId = null
         val initialPos = startPositionMs.coerceAtLeast(0L)
 
         val initialQuality = when {
+            SecurityValidators.isLocalTrackId(clean.id) -> localAudio.resolveQualityLabel(clean.id)
             !forceFreshUrl && offlineCache.isCached(clean.id) -> "OFFLINE · OPUS"
             !forceFreshUrl -> api.getCachedStream(clean.id, preferHls)?.qualityLabel ?: "OPUS 160k"
             else -> _state.value.qualityLabel
@@ -1070,6 +1403,9 @@ class MusicPlayerController(
                 qualityLabel = initialQuality,
                 lyrics = LyricsResult(),
                 loadingLyrics = true,
+                loadingLyricsTranslation = false,
+                translatedLyricsLines = emptyList(),
+                lyricsAlreadySpanish = false,
                 sponsorSkippedNotice = null,
                 errorMsg = null,
             )
@@ -1101,7 +1437,7 @@ class MusicPlayerController(
             if (_state.value.currentTrack?.id != clean.id) return@launch
 
             val primaryItem: MediaItem
-            if (forceFreshUrl || preferHls) {
+            if ((forceFreshUrl || preferHls) && SecurityValidators.isValidVideoId(clean.id)) {
                 // Reintento explícito: invalidar caché y resolver fresh URL / HLS solo-audio
                 val resolved = api.resolveStreamUrl(
                     videoId = clean.id,
@@ -1194,6 +1530,7 @@ class MusicPlayerController(
                 return@launch
             }
             if (p.isPlaying) {
+                cancelActiveCrossfade()
                 fadeOutAndPause(p)
             } else {
                 fadeJob?.cancel()
@@ -1215,6 +1552,8 @@ class MusicPlayerController(
     }
 
     fun seekTo(positionMs: Long) {
+        cancelActiveCrossfade()
+        crossfadeTriggeredForTrackId = null
         scope.launch {
             val p = ensureActivePlayer() ?: return@launch
             val clamped = positionMs.coerceIn(0L, _state.value.durationMs.coerceAtLeast(1L))
@@ -1224,6 +1563,7 @@ class MusicPlayerController(
     }
 
     fun skipNext(autoAdvance: Boolean = false) {
+        cancelActiveCrossfade()
         // Si el usuario salta manualmente muy pronto (entre 2s y 18s y < 30%), aprender el skip para evitar similares
         if (!autoAdvance) {
             val cur = _state.value.currentTrack
@@ -1315,6 +1655,7 @@ class MusicPlayerController(
     }
 
     fun skipPrevious() {
+        cancelActiveCrossfade()
         val p = activePlayer()
         if (p != null && p.currentPosition > 4000L) {
             seekTo(0L)
@@ -1625,17 +1966,37 @@ class MusicPlayerController(
                     ).toSet()
                 val seedTrack = _state.value.currentTrack?.takeIf { it.id == seedVideoId }
                     ?: findTrackById(seedVideoId)
-                val fresh = if (seedTrack != null) {
-                    recommendations.buildSmartRadioQueue(
-                        currentTrack = seedTrack,
-                        recentSessionTracks = history.toList(),
-                        excludedIds = existingIds,
-                        limit = 16,
-                    )
-                } else {
-                    api.getRadio(seedVideoId, limit = 20)
-                        .filterNot { it.id in existingIds }
-                        .take(15)
+                val fresh = when {
+                    SecurityValidators.isLocalTrackId(seedVideoId) -> {
+                        // Para archivos locales: recomendar pistas similares en YT o continuar con archivos locales si no hay red
+                        val ytFromLocal = if (seedTrack != null) {
+                            api.search("${seedTrack.title} ${seedTrack.artist}", limit = 12, mode = "songs")
+                                .filterNot { it.id in existingIds }
+                        } else {
+                            emptyList()
+                        }
+                        if (ytFromLocal.isNotEmpty()) {
+                            ytFromLocal.take(12)
+                        } else {
+                            localAudio.state.value.tracks
+                                .filterNot { it.id in existingIds }
+                                .shuffled()
+                                .take(12)
+                        }
+                    }
+                    seedTrack != null -> {
+                        recommendations.buildSmartRadioQueue(
+                            currentTrack = seedTrack,
+                            recentSessionTracks = history.toList(),
+                            excludedIds = existingIds,
+                            limit = 16,
+                        )
+                    }
+                    else -> {
+                        api.getRadio(seedVideoId, limit = 20)
+                            .filterNot { it.id in existingIds }
+                            .take(15)
+                    }
                 }
                 val shouldPlayNow = pendingPlayRadioWhenReady
                 pendingPlayRadioWhenReady = false

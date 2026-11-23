@@ -16,6 +16,14 @@ data class Track(
 )
 
 @Serializable
+data class DeviceAudioProfile(
+    @SerialName("preset_name") val presetName: String = "FLAT",
+    @SerialName("band_levels_mb") val bandLevelsMb: List<Int> = listOf(0, 0, 0, 0, 0),
+    @SerialName("bass_boost") val bassBoost: Int = 0,
+    @SerialName("normalize_volume") val normalizeVolume: Boolean = true,
+)
+
+@Serializable
 data class LibrarySettings(
     @SerialName("auto_radio") val autoRadio: Boolean = true,
     @SerialName("auto_pause_on_video") val autoPauseOnVideo: Boolean = true,
@@ -26,6 +34,12 @@ data class LibrarySettings(
     @SerialName("dynamic_app_theme") val dynamicAppTheme: Boolean = true,
     @SerialName("skip_silence") val skipSilence: Boolean = false,
     @SerialName("smooth_fade") val smoothFade: Boolean = true,
+    @SerialName("crossfade_sec") val crossfadeSec: Int = 0,
+    @SerialName("auto_cache_wifi") val autoCacheWifi: Boolean = false,
+    @SerialName("auto_cache_max_mb") val autoCacheMaxMb: Int = 500,
+    @SerialName("auto_cache_favorites") val autoCacheFavorites: Boolean = false,
+    @SerialName("per_device_audio_profiles") val perDeviceAudioProfiles: Boolean = true,
+    @SerialName("audio_profiles") val audioProfiles: Map<String, DeviceAudioProfile> = emptyMap(),
 )
 
 @Serializable
@@ -75,6 +89,42 @@ data class RemotePlaylist(
     val thumb: String,
 )
 
+data class ArtistAlbumItem(
+    val browseId: String,
+    val title: String,
+    val year: String = "",
+    val thumb: String = "",
+    val isSingle: Boolean = false,
+)
+
+data class RelatedArtistItem(
+    val browseId: String,
+    val name: String,
+    val subtitle: String = "",
+    val thumb: String = "",
+)
+
+data class ArtistPageData(
+    val browseId: String,
+    val name: String,
+    val subscribers: String = "",
+    val description: String = "",
+    val bannerThumb: String = "",
+    val topSongs: List<Track> = emptyList(),
+    val albums: List<ArtistAlbumItem> = emptyList(),
+    val singles: List<ArtistAlbumItem> = emptyList(),
+    val relatedArtists: List<RelatedArtistItem> = emptyList(),
+)
+
+data class AlbumPageData(
+    val browseId: String,
+    val title: String,
+    val artist: String,
+    val year: String = "",
+    val thumb: String = "",
+    val tracks: List<Track> = emptyList(),
+)
+
 data class ResolvedStream(
     val url: String,
     val mimeType: String,
@@ -86,6 +136,8 @@ data class ResolvedStream(
 
 object SecurityValidators {
     private val VIDEO_ID_RE = Regex("^[A-Za-z0-9_-]{8,16}$")
+    private val LOCAL_TRACK_ID_RE = Regex("^loc_([0-9]{1,20})$")
+    private val LOCAL_ALBUM_ART_RE = Regex("^content://media/external/audio/albumart/[0-9]{1,20}$")
     private val PLAYLIST_ID_RE = Regex("^[A-Za-z0-9_-]{2,80}$")
     private val THUMB_SIZE_RE = Regex("=w\\d+-h\\d+[^&]*")
     private val DUR_RE = Regex("^\\d+:\\d{2}(?::\\d{2})?$")
@@ -99,7 +151,22 @@ object SecurityValidators {
     )
     private val ALLOWED_STREAM_SUFFIXES = listOf(".googlevideo.com", ".youtube.com")
 
-    fun isValidVideoId(id: String?): Boolean = !id.isNullOrBlank() && VIDEO_ID_RE.matches(id.trim())
+    fun isValidVideoId(id: String?): Boolean {
+        val s = id?.trim() ?: return false
+        return !s.startsWith("loc_") && VIDEO_ID_RE.matches(s)
+    }
+
+    fun isLocalTrackId(id: String?): Boolean {
+        val s = id?.trim() ?: return false
+        return LOCAL_TRACK_ID_RE.matches(s)
+    }
+
+    fun extractLocalMediaId(id: String?): Long? {
+        val s = id?.trim() ?: return null
+        return LOCAL_TRACK_ID_RE.matchEntire(s)?.groupValues?.getOrNull(1)?.toLongOrNull()
+    }
+
+    fun isValidTrackId(id: String?): Boolean = isValidVideoId(id) || isLocalTrackId(id)
 
     fun isValidBrowseId(id: String?): Boolean = !id.isNullOrBlank() && PLAYLIST_ID_RE.matches(id.trim())
 
@@ -112,8 +179,11 @@ object SecurityValidators {
         }
     }
 
+    fun isSafeLocalAlbumArtUri(url: String?): Boolean = !url.isNullOrBlank() && LOCAL_ALBUM_ART_RE.matches(url.trim())
+
     fun isSafeThumbUrl(url: String?): Boolean {
         val u = url?.trim() ?: return false
+        if (isSafeLocalAlbumArtUri(u)) return true
         return try {
             val uri = URI(u)
             uri.scheme.equals("https", ignoreCase = true) && hostMatches(uri.host, ALLOWED_THUMB_SUFFIXES)
@@ -134,6 +204,7 @@ object SecurityValidators {
 
     fun upgradeThumbUrl(url: String?): String {
         val u = url?.trim() ?: return ""
+        if (isSafeLocalAlbumArtUri(u)) return u
         if (!isSafeThumbUrl(u)) return ""
         val upgraded = if (u.contains("googleusercontent.com") || u.contains("ggpht.com")) {
             if (THUMB_SIZE_RE.containsMatchIn(u)) {
@@ -173,7 +244,7 @@ object SecurityValidators {
 
     fun sanitizeTrack(raw: Track): Track? {
         val vid = raw.id.trim()
-        if (!isValidVideoId(vid)) return null
+        if (!isValidTrackId(vid)) return null
         val dur = if (raw.duration > 0) raw.duration else parseDurationSec(raw.durationText)
         return Track(
             id = vid,
