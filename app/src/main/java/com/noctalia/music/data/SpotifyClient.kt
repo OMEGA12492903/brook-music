@@ -149,10 +149,11 @@ class SpotifyClient(
                     if (resp.code in 300..399) {
                         resp.header("Location")?.trim()
                     } else if (resp.isSuccessful) {
-                        // Algunos enlaces spotify.link redirigen mediante meta-refresh o enlace canónico en HTML
+                        // Algunos enlaces spotify.link redirigen mediante canonical/og:url o enlace en HTML
                         val body = readBounded(resp, maxBytes = 256L * 1024L).orEmpty()
-                        EMBED_ENTITY_IN_TEXT_RE.find(body)?.let { m ->
-                            return@withContext m.groupValues[1] to m.groupValues[2]
+                        val targetMatch = CANONICAL_ENTITY_RE.find(body) ?: EMBED_ENTITY_IN_TEXT_RE.find(body)
+                        if (targetMatch != null) {
+                            return@withContext targetMatch.groupValues[1].lowercase() to targetMatch.groupValues[2]
                         }
                         null
                     } else {
@@ -190,13 +191,22 @@ class SpotifyClient(
                 IllegalArgumentException("Enlace de Spotify no válido. Pega una playlist, álbum, canción o artista.")
             )
 
+        var expiredSessionErr: Throwable? = null
         if (kind == "playlist" && authStore.isSpotifyLoggedIn()) {
             val authRes = fetchPlaylistViaApi(id)
             if (authRes.isSuccess && authRes.getOrThrow().tracks.isNotEmpty()) {
                 return@withContext authRes
             }
+            if (authRes.exceptionOrNull() is SecurityException) {
+                expiredSessionErr = authRes.exceptionOrNull()
+            }
         }
-        fetchPublicEmbed(kind, id)
+        val embedRes = fetchPublicEmbed(kind, id)
+        if (embedRes.isFailure && expiredSessionErr != null) {
+            Result.failure(expiredSessionErr)
+        } else {
+            embedRes
+        }
     }
 
     private fun fetchPublicEmbed(kind: String, id: String): Result<SpotifyCollection> {
@@ -516,8 +526,9 @@ class SpotifyClient(
             val artist = cleanText(row.getOrNull(artistCol)).replace(";", ", ")
             val album = cleanText(row.getOrNull(albumCol))
             val rawDur = row.getOrNull(durCol)?.trim().orEmpty()
-            val durMs = rawDur.toLongOrNull()?.let { n -> if (n > 10_000L) n else n * 1000L }
-                ?: (SecurityValidators.parseDurationSec(rawDur) * 1000L)
+            val durMs = (rawDur.toLongOrNull()?.let { n -> if (n > 10_000L) n else n * 1000L }
+                ?: (SecurityValidators.parseDurationSec(rawDur) * 1000L))
+                .coerceIn(0L, 12L * 3600L * 1000L)
             seeds.add(SpotifyTrackSeed(title = title, artist = artist, album = album, durationMs = durMs))
         }
 
@@ -625,28 +636,67 @@ class SpotifyClient(
 
     private suspend fun matchSingleSeed(seed: SpotifyTrackSeed): Track? {
         val primaryArtist = seed.artist.substringBefore(",").trim()
-        val query = buildString {
-            append(seed.title)
-            if (primaryArtist.isNotEmpty()) {
-                append(' ')
-                append(primaryArtist)
-            }
-        }.trim().take(160)
-        if (query.isEmpty()) return null
+        val cleanTitle = cleanTitleForSearch(seed.title)
+        val primaryQuery = buildQuery(cleanTitle, primaryArtist)
+        if (primaryQuery.isEmpty()) return null
 
-        var candidates = ytApi.search(query, limit = 6, mode = "songs")
+        var candidates = ytApi.search(primaryQuery, limit = 6, mode = "songs")
         if (candidates.isEmpty()) {
-            candidates = ytApi.search(query, limit = 5, mode = "all")
+            candidates = ytApi.search(primaryQuery, limit = 5, mode = "all")
         }
-        if (candidates.isEmpty()) return null
 
-        val targetTitleNorm = normalize(seed.title)
+        val targetTitleNorm = normalize(cleanTitle)
         val targetArtistNorm = normalize(primaryArtist)
         val targetDurSec = (seed.durationMs / 1000L).toInt()
 
+        var (bestTrack, bestScore) = pickBestCandidate(candidates, targetTitleNorm, targetArtistNorm, targetDurSec)
+
+        // Si el título tenía paréntesis/corchetes largos (ej. "[From ...]" o "(feat. ...)") y la puntuación es baja,
+        // hacer una segunda búsqueda más limpia sin los paréntesis.
+        val strippedTitle = PARENS_AND_BRACKETS_RE.replace(cleanTitle, " ").replace(MULTI_SPACE_RE, " ").trim()
+        if ((bestTrack == null || bestScore < 45) &&
+            strippedTitle.length >= 2 &&
+            !strippedTitle.equals(cleanTitle, ignoreCase = true)
+        ) {
+            val fallbackQuery = buildQuery(strippedTitle, primaryArtist)
+            val more = ytApi.search(fallbackQuery, limit = 6, mode = "songs")
+            if (more.isNotEmpty()) {
+                val (altTrack, altScore) = pickBestCandidate(
+                    more,
+                    normalize(strippedTitle),
+                    targetArtistNorm,
+                    targetDurSec,
+                )
+                if (altTrack != null && altScore > bestScore) {
+                    bestTrack = altTrack
+                    bestScore = altScore
+                }
+            }
+        }
+        return bestTrack?.let { SecurityValidators.sanitizeTrack(it) }
+    }
+
+    private fun buildQuery(title: String, artist: String): String = buildString {
+        append(title)
+        if (artist.isNotEmpty()) {
+            append(' ')
+            append(artist)
+        }
+    }.trim().take(160)
+
+    private fun cleanTitleForSearch(raw: String): String {
+        val cleaned = REMASTER_SUFFIX_RE.replace(raw, "").replace(MULTI_SPACE_RE, " ").trim()
+        return cleaned.ifEmpty { raw.trim() }
+    }
+
+    private fun pickBestCandidate(
+        candidates: List<Track>,
+        targetTitleNorm: String,
+        targetArtistNorm: String,
+        targetDurSec: Int,
+    ): Pair<Track?, Int> {
         var bestTrack: Track? = null
         var bestScore = Int.MIN_VALUE
-
         for (cand in candidates) {
             val score = scoreCandidate(
                 cand = cand,
@@ -659,7 +709,7 @@ class SpotifyClient(
                 bestTrack = cand
             }
         }
-        return bestTrack?.let { SecurityValidators.sanitizeTrack(it) }
+        return bestTrack to bestScore
     }
 
     private fun scoreCandidate(
@@ -672,16 +722,18 @@ class SpotifyClient(
         val candArtistNorm = normalize(cand.artist)
         var score = 0
 
-        // 1. Coincidencia de título
-        when {
-            candTitleNorm == targetTitleNorm -> score += 60
-            candTitleNorm.contains(targetTitleNorm) || targetTitleNorm.contains(candTitleNorm) -> score += 34
-            else -> {
-                val targetWords = targetTitleNorm.split(' ').filter { it.length >= 2 }.toSet()
-                val candWords = candTitleNorm.split(' ').filter { it.length >= 2 }.toSet()
-                if (targetWords.isNotEmpty()) {
-                    val overlap = targetWords.intersect(candWords).size
-                    score += (overlap * 28) / targetWords.size
+        // 1. Coincidencia de título (con soporte completo Unicode: japonés, coreano, cirílico, español...)
+        if (targetTitleNorm.isNotEmpty() && candTitleNorm.isNotEmpty()) {
+            when {
+                candTitleNorm == targetTitleNorm -> score += 60
+                candTitleNorm.contains(targetTitleNorm) || targetTitleNorm.contains(candTitleNorm) -> score += 34
+                else -> {
+                    val targetWords = targetTitleNorm.split(' ').filter { it.length >= 2 }.toSet()
+                    val candWords = candTitleNorm.split(' ').filter { it.length >= 2 }.toSet()
+                    if (targetWords.isNotEmpty()) {
+                        val overlap = targetWords.intersect(candWords).size
+                        score += (overlap * 28) / targetWords.size
+                    }
                 }
             }
         }
@@ -689,8 +741,9 @@ class SpotifyClient(
         // 2. Coincidencia de artista principal
         if (targetArtistNorm.isNotEmpty()) {
             when {
-                candArtistNorm.contains(targetArtistNorm) || targetArtistNorm.contains(candArtistNorm) -> score += 45
-                candTitleNorm.contains(targetArtistNorm) -> score += 22
+                candArtistNorm.isNotEmpty() &&
+                    (candArtistNorm.contains(targetArtistNorm) || targetArtistNorm.contains(candArtistNorm)) -> score += 45
+                candTitleNorm.isNotEmpty() && candTitleNorm.contains(targetArtistNorm) -> score += 22
             }
         }
 
@@ -761,20 +814,30 @@ class SpotifyClient(
         private val ALLOWED_KINDS = setOf("playlist", "album", "track", "artist")
         private val SPOTIFY_ID_RE = Regex("^[A-Za-z0-9]{22}$")
         private val DIRECT_ENTITY_RE = Regex(
-            "(?:open\\.spotify\\.com/(?:intl-[a-z-]+/)?(?:embed/)?(?:user/[^/]+/)?|spotify:)(playlist|album|track|artist)[/:]([A-Za-z0-9]{22})",
+            "(?:(?:open|play)\\.spotify\\.com/(?:intl-[a-z-]+/)?(?:embed/)?(?:user/[^/]+/)?|spotify:)(playlist|album|track|artist)[/:]([A-Za-z0-9]{22})",
+            RegexOption.IGNORE_CASE,
+        )
+        private val CANONICAL_ENTITY_RE = Regex(
+            """(?:og:url|canonical)[^>]{0,120}(?:open|play)\.spotify\.com/(?:intl-[a-z-]+/)?(playlist|album|track|artist)/([A-Za-z0-9]{22})""",
             RegexOption.IGNORE_CASE,
         )
         private val EMBED_ENTITY_IN_TEXT_RE = Regex(
-            "open\\.spotify\\.com/(?:intl-[a-z-]+/)?(playlist|album|track|artist)/([A-Za-z0-9]{22})",
+            "(?:open|play)\\.spotify\\.com/(?:intl-[a-z-]+/)?(playlist|album|track|artist)/([A-Za-z0-9]{22})",
             RegexOption.IGNORE_CASE,
         )
         private val NEXT_DATA_RE = Regex(
             """<script id="__NEXT_DATA__" type="application/json">(.*?)</script>""",
             setOf(RegexOption.DOT_MATCHES_ALL),
         )
+        private val REMASTER_SUFFIX_RE = Regex(
+            """\s*[-–]\s*(?:\d{4}\s+)?remaster(?:ed)?(?:\s+\d{4})?.*$|\s*[\(\[]\s*(?:\d{4}\s+)?remaster(?:ed)?(?:\s+\d{4})?\s*[\)\]]""",
+            RegexOption.IGNORE_CASE,
+        )
+        private val PARENS_AND_BRACKETS_RE = Regex("""[\(\[][^\)\]]{2,80}[\)\]]""")
         private val CONTROL_RE = Regex("[\\r\\n\\u0000-\\u001F\\u007F]")
         private val DIACRITICS_RE = Regex("\\p{InCombiningDiacriticalMarks}+")
-        private val NON_ALNUM_RE = Regex("[^a-z0-9]+")
+        // Conserva letras y dígitos Unicode (japonés, coreano, cirílico, griego, español, etc.)
+        private val NON_ALNUM_RE = Regex("[^\\p{L}\\p{N}]+")
         private val MULTI_SPACE_RE = Regex("\\s+")
         private val UNWANTED_VARIANT_KEYWORDS = listOf(
             "karaoke",

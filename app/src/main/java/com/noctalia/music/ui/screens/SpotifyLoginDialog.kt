@@ -40,15 +40,18 @@ import androidx.compose.ui.window.DialogWindowProvider
 import com.noctalia.music.data.AuthStore
 import com.noctalia.music.ui.theme.NoctaliaColors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 private val ALLOWED_SPOTIFY_LOGIN_HOSTS = setOf(
     "accounts.spotify.com",
+    "auth.spotify.com",
     "open.spotify.com",
     "www.spotify.com",
     "login.spotify.com",
     "challenge.spotify.com",
     "accounts.google.com",
     "accounts.google.es",
+    "myaccount.google.com",
     "gds.google.com",
     "consent.google.com",
     "appleid.apple.com",
@@ -100,10 +103,14 @@ fun SpotifyLoginDialog(
     onLoginSuccess: (bearerToken: String, clientToken: String?) -> Unit,
 ) {
     val captured = remember { AtomicBoolean(false) }
+    val pendingBearer = remember { AtomicReference<String?>(null) }
+    val pendingClient = remember { AtomicReference<String?>(null) }
+    val fallbackScheduled = remember { AtomicBoolean(false) }
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
 
     Dialog(
         onDismissRequest = {
+            captured.set(true)
             wipeSpotifyWebView(webViewRef)
             onDismiss()
         },
@@ -113,6 +120,7 @@ fun SpotifyLoginDialog(
         DisposableEffect(dialogWindow) {
             dialogWindow?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
             onDispose {
+                captured.set(true)
                 dialogWindow?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
                 wipeSpotifyWebView(webViewRef)
                 try {
@@ -151,6 +159,7 @@ fun SpotifyLoginDialog(
                     )
                 }
                 IconButton(onClick = {
+                    captured.set(true)
                     wipeSpotifyWebView(webViewRef)
                     onDismiss()
                 }) {
@@ -219,11 +228,26 @@ fun SpotifyLoginDialog(
                                                 null
                                             }
                                             val cleanClient = rawClient?.let { AuthStore.sanitizeSpotifyToken(it) }
-                                            if (cleanBearer != null && captured.compareAndSet(false, true)) {
+                                            if (cleanBearer != null) pendingBearer.set(cleanBearer)
+                                            if (cleanClient != null) pendingClient.set(cleanClient)
+
+                                            val b = pendingBearer.get()
+                                            val c = pendingClient.get()
+                                            if (b != null && c != null && captured.compareAndSet(false, true)) {
                                                 view?.post {
                                                     wipeSpotifyWebView(view)
-                                                    onLoginSuccess(cleanBearer, cleanClient)
+                                                    onLoginSuccess(b, c)
                                                 }
+                                            } else if (b != null && fallbackScheduled.compareAndSet(false, true)) {
+                                                // Esperar hasta 2.5s por si el siguiente XHR incluye `client-token`; si no, continuar con Bearer
+                                                view?.postDelayed({
+                                                    val finalBearer = pendingBearer.get()
+                                                    val finalClient = pendingClient.get()
+                                                    if (finalBearer != null && captured.compareAndSet(false, true)) {
+                                                        wipeSpotifyWebView(view)
+                                                        onLoginSuccess(finalBearer, finalClient)
+                                                    }
+                                                }, 2500L)
                                             }
                                         }
                                     }
