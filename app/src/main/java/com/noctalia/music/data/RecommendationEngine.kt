@@ -54,15 +54,15 @@ class RecommendationEngine(
     private var cachedHadTaste: Boolean = false
     @Volatile
     private var becauseArtistCursor: Int = 0
+    @Volatile
+    private var accountHistorySeeds: List<Track> = emptyList()
+
+    fun setAccountHistorySeeds(tracks: List<Track>) {
+        accountHistorySeeds = tracks.take(30)
+    }
 
     fun primaryArtistDisplay(rawArtist: String): String {
-        val cut = rawArtist
-            .substringBefore(",")
-            .substringBefore(" feat.")
-            .substringBefore(" ft.")
-            .substringBefore(" & ")
-            .substringBefore(" x ")
-            .trim()
+        val cut = ARTIST_SPLIT_RE.split(rawArtist, limit = 2).firstOrNull()?.trim().orEmpty()
         return cut.ifBlank { rawArtist.trim().ifBlank { "Artista" } }
     }
 
@@ -128,11 +128,15 @@ class RecommendationEngine(
             }
         }
 
-        // 4. Recientes (ambiente musical actual)
+        // 4. Recientes (ambiente musical actual) + historial de cuenta YT Music si está conectada
         payload.recent.take(15).forEachIndexed { idx, t ->
             knownIds.add(t.id)
             if (idx < 6) recentlyPlayedIds.add(t.id)
             addArtistScore(t.artist, (6f - idx * 0.35f).coerceAtLeast(1f))
+        }
+        accountHistorySeeds.take(20).forEachIndexed { idx, t ->
+            knownIds.add(t.id)
+            addArtistScore(t.artist, (5f - idx * 0.2f).coerceAtLeast(1f))
         }
 
         val topArtists = artistScores.entries
@@ -155,6 +159,9 @@ class RecommendationEngine(
             }
         payload.favorites.take(8).forEachIndexed { idx, t ->
             seedCandidates.add(t to (26f - idx * 1.5f))
+        }
+        accountHistorySeeds.take(10).forEachIndexed { idx, t ->
+            if (t.id !in skippedIds) seedCandidates.add(t to (22f - idx * 1.2f))
         }
         payload.playlists.values.flatten().take(12).forEach { t ->
             if (t.id !in skippedIds) seedCandidates.add(t to 16f)
@@ -185,8 +192,14 @@ class RecommendationEngine(
 
     fun hasFreshHomeCache(): Boolean {
         val prev = cachedHome ?: return false
-        val hasTaste = buildTasteProfile().topSeeds.isNotEmpty()
-        return cachedHadTaste == hasTaste && (System.currentTimeMillis() - cachedHomeAtMs) < HOME_CACHE_TTL_MS &&
+        val lib = library.state.value
+        val hasTasteNow = lib.stats.isNotEmpty() ||
+            lib.favorites.isNotEmpty() ||
+            lib.recent.isNotEmpty() ||
+            accountHistorySeeds.isNotEmpty() ||
+            lib.playlists.values.any { it.isNotEmpty() }
+        return cachedHadTaste == hasTasteNow &&
+            (System.currentTimeMillis() - cachedHomeAtMs) < HOME_CACHE_TTL_MS &&
             prev.forYouTracks.isNotEmpty()
     }
 
@@ -323,6 +336,7 @@ class RecommendationEngine(
             addAll(payload.stats.values.sortedByDescending { it.listenedSec + it.playCount * 20L }.map { it.track })
             addAll(payload.favorites)
             addAll(payload.recent)
+            addAll(accountHistorySeeds)
             payload.playlists.values.forEach { addAll(it) }
         }
         val out = mutableListOf<ArtistMixCard>()
@@ -526,6 +540,10 @@ class RecommendationEngine(
 
     companion object {
         private const val HOME_CACHE_TTL_MS = 12L * 60L * 1000L
+        private val ARTIST_SPLIT_RE = Regex(
+            """\s*(?:,|\s+feat\.?\s+|\s+ft\.?\s+|\s+&\s+|\s+x\s+)\s*""",
+            RegexOption.IGNORE_CASE,
+        )
         private val DIACRITICS_RE = Regex("\\p{InCombiningDiacriticalMarks}+")
         private val NON_ALNUM_RE = Regex("[^\\p{L}\\p{N}]+")
         private val MULTI_SPACE_RE = Regex("\\s+")

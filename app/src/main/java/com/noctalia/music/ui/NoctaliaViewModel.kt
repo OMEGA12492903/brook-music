@@ -269,6 +269,7 @@ class NoctaliaViewModel : ViewModel() {
 
     fun logoutYouTubeAccount() {
         authStore.clearSession()
+        recommendations.setAccountHistorySeeds(emptyList())
         _ui.update {
             it.copy(
                 isLoggedIn = false,
@@ -287,12 +288,16 @@ class NoctaliaViewModel : ViewModel() {
             _ui.update { it.copy(loadingAccount = true) }
             val playlists = api.fetchAccountPlaylists()
             val history = api.fetchAccountHistory()
+            recommendations.setAccountHistorySeeds(history)
             _ui.update {
                 it.copy(
                     accountPlaylists = playlists,
                     accountHistory = history,
                     loadingAccount = false,
                 )
+            }
+            if (history.isNotEmpty() && !_ui.value.homeRecommendations.personalized) {
+                refreshHome(forceRefresh = true)
             }
         }
     }

@@ -1144,6 +1144,7 @@ class MusicPlayerController(
         val idx = startIndex.coerceIn(0, clean.lastIndex)
         val selected = clean[idx]
         val rest = clean.drop(idx + 1)
+        resetSmartShufflePool()
         plannedNextTrackId = null
         _state.update { it.copy(queue = rest) }
         playTrack(selected, pushHistory = true)
@@ -1390,6 +1391,7 @@ class MusicPlayerController(
     fun startRadioFromTrack(track: Track) {
         val clean = SecurityValidators.sanitizeTrack(track) ?: return
         radioJob?.cancel()
+        resetSmartShufflePool()
         pendingPlayRadioWhenReady = false
         plannedNextTrackId = null
         _state.update { it.copy(queue = emptyList()) }
@@ -1421,6 +1423,7 @@ class MusicPlayerController(
     }
 
     fun clearQueue() {
+        resetSmartShufflePool()
         plannedNextTrackId = null
         _state.update { it.copy(queue = emptyList()) }
         persistCurrentSnapshot()
@@ -1434,8 +1437,17 @@ class MusicPlayerController(
         if (nextShuffle && _state.value.autoRadio) {
             smartShuffleTracksSinceInject = 1
             _state.value.currentTrack?.let { ensureSmartShufflePool(it) }
+        } else if (!nextShuffle) {
+            resetSmartShufflePool()
         }
         syncNextMediaItemInPlayer(alsoPrefetch = true)
+    }
+
+    private fun resetSmartShufflePool() {
+        smartShuffleFetchJob?.cancel()
+        smartShuffleFetchJob = null
+        smartShufflePool.clear()
+        smartShuffleTracksSinceInject = 0
     }
 
     /**
