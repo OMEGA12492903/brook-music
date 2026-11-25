@@ -503,14 +503,19 @@ fun FullPlayerOverlay(
                             fontWeight = FontWeight.ExtraBold,
                             letterSpacing = 1.6.sp,
                         )
+                        val speedTxt = if (abs(audioFx.playbackSpeed - 1.0f) >= 0.03f) {
+                            " · %.2fx".format(audioFx.playbackSpeed)
+                        } else {
+                            ""
+                        }
                         val timerTxt = when {
                             player.sleepEndOfTrack -> " · ⏱ Fin pista"
                             player.sleepRemainingSec != null -> " · ⏱ ${SecurityValidators.fmtDuration(player.sleepRemainingSec)}"
                             else -> ""
                         }
                         Text(
-                            text = "${player.qualityLabel}$timerTxt",
-                            color = if (timerTxt.isNotEmpty()) NoctaliaColors.Magenta else NoctaliaColors.TextMuted,
+                            text = "${player.qualityLabel}$speedTxt$timerTxt",
+                            color = if (timerTxt.isNotEmpty() || speedTxt.isNotEmpty()) NoctaliaColors.Magenta else NoctaliaColors.TextMuted,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.SemiBold,
                         )

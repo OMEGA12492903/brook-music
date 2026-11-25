@@ -58,9 +58,11 @@ private val ALLOWED_LOGIN_EXACT_HOSTS = setOf(
     "fonts.gstatic.com",
 )
 
+private val GOOGLE_LOCALIZED_ACCOUNTS_RE = Regex("^accounts\\.google(\\.[a-z]{2,3}){1,2}$")
+
 private fun isAllowedLoginHost(host: String?): Boolean {
     val h = host?.lowercase()?.trimEnd('.') ?: return false
-    return h in ALLOWED_LOGIN_EXACT_HOSTS
+    return h in ALLOWED_LOGIN_EXACT_HOSTS || GOOGLE_LOCALIZED_ACCOUNTS_RE.matches(h)
 }
 
 private fun wipeWebViewData(webView: WebView?) {

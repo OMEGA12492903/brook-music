@@ -2,6 +2,7 @@ package com.noctalia.music.player
 
 import android.app.PendingIntent
 import android.content.ContentUris
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.provider.MediaStore
@@ -13,11 +14,19 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.Player
+import androidx.media3.common.audio.SonicAudioProcessor
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
+import androidx.media3.exoplayer.DefaultLivePlaybackSpeedControl
+import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.audio.AudioSink
+import androidx.media3.exoplayer.audio.DefaultAudioSink
+import androidx.media3.exoplayer.audio.DefaultAudioTrackBufferSizeProvider
+import androidx.media3.exoplayer.audio.SilenceSkippingAudioProcessor
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.LibraryResult
 import androidx.media3.session.MediaLibraryService
@@ -113,8 +122,53 @@ class NoctaliaPlaybackService : MediaLibraryService() {
         audioAttrs: AudioAttributes,
         handleFocus: Boolean,
     ): ExoPlayer {
-        return ExoPlayer.Builder(this)
+        // RenderersFactory afinado para MÚSICA (evita el efecto "acelerado" en partes suaves al activar
+        // «Saltar silencios» y evita acelerones de recuperación de AudioTrack en Bluetooth/HyperOS):
+        // - SilenceSkippingAudioProcessor calibrado para música: solo silencio real (>650 ms y <-46 dBFS)
+        // - Buffer PCM holgado (500–1000 ms) para absorber latencia Bluetooth A2DP sin micro-underruns
+        // - LivePlaybackSpeedControl bloqueado a 1.0x para que HLS jamás altere la velocidad automáticamente
+        val renderersFactory = object : DefaultRenderersFactory(this) {
+            override fun buildAudioSink(
+                context: Context,
+                enableFloatOutput: Boolean,
+                enableAudioTrackPlaybackParams: Boolean,
+            ): AudioSink {
+                val musicSilenceSkipper = SilenceSkippingAudioProcessor(
+                    /* minimumSilenceDurationUs = */ 650_000L,
+                    /* silenceRetentionRatio = */ 0.05f,
+                    /* maxSilenceToKeepDurationUs = */ 150_000L,
+                    /* minVolumeToKeepPercentageWhenMuting = */ 0,
+                    /* silenceThresholdLevel = */ 160.toShort(),
+                )
+                val processorChain = DefaultAudioSink.DefaultAudioProcessorChain(
+                    emptyArray(),
+                    musicSilenceSkipper,
+                    SonicAudioProcessor(),
+                )
+                val bufferSizeProvider = DefaultAudioTrackBufferSizeProvider.Builder()
+                    .setMinPcmBufferDurationUs(500_000)
+                    .setMaxPcmBufferDurationUs(1_000_000)
+                    .build()
+                return DefaultAudioSink.Builder(context)
+                    .setEnableFloatOutput(enableFloatOutput)
+                    .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
+                    .setAudioProcessorChain(processorChain)
+                    .setAudioTrackBufferSizeProvider(bufferSizeProvider)
+                    .build()
+            }
+        }
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(20_000, 60_000, 1_500, 2_500)
+            .build()
+        val fixedSpeedControl = DefaultLivePlaybackSpeedControl.Builder()
+            .setFallbackMinPlaybackSpeed(1.0f)
+            .setFallbackMaxPlaybackSpeed(1.0f)
+            .build()
+
+        return ExoPlayer.Builder(this, renderersFactory)
             .setMediaSourceFactory(DefaultMediaSourceFactory(resolvingFactory))
+            .setLoadControl(loadControl)
+            .setLivePlaybackSpeedControl(fixedSpeedControl)
             .setAudioAttributes(audioAttrs, handleFocus)
             .setHandleAudioBecomingNoisy(handleFocus)
             .setWakeMode(C.WAKE_MODE_NETWORK)

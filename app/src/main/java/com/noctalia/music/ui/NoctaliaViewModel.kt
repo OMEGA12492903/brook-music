@@ -490,7 +490,9 @@ class NoctaliaViewModel : ViewModel() {
     }
 
     fun clearOfflineCache() {
-        offlineCache.clearAll()
+        viewModelScope.launch(Dispatchers.IO) {
+            offlineCache.clearAll()
+        }
         showMessage("Caché sin conexión vaciada.")
     }
 

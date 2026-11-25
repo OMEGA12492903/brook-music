@@ -45,10 +45,17 @@ class OfflineCacheManager(
     private val _state = MutableStateFlow(scanDisk(emptySet()))
     val state: StateFlow<OfflineState> = _state.asStateFlow()
 
+    @Synchronized
     private fun savePinned() {
+        val tmp = File(dir, "pinned_ids.tmp")
         try {
-            pinnedFile.writeText(pinnedIds.joinToString("\n"), Charsets.UTF_8)
+            tmp.writeText(pinnedIds.joinToString("\n"), Charsets.UTF_8)
+            if (!tmp.renameTo(pinnedFile)) {
+                tmp.copyTo(pinnedFile, overwrite = true)
+                tmp.delete()
+            }
         } catch (_: Exception) {
+            try { tmp.delete() } catch (_: Exception) {}
         }
     }
 
@@ -208,7 +215,12 @@ class OfflineCacheManager(
     }
 
     fun clearAll() {
-        dir.listFiles()?.forEach { it.delete() }
+        val activeTmpNames = inFlightIds.map { "$it.tmp" }.toSet()
+        dir.listFiles()?.forEach { f ->
+            if (f.name !in activeTmpNames) {
+                f.delete()
+            }
+        }
         pinnedIds.clear()
         _state.value = scanDisk(inFlightIds.toSet())
     }

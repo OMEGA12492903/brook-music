@@ -398,6 +398,7 @@ class AudioEffectsController(
         val st = _state.value
         equalizer?.let { eq ->
             try {
+                val hasActiveEq = st.bandLevelsMb.any { it != 0 }
                 val bands = eq.numberOfBands.toInt()
                 val range = eq.bandLevelRange
                 val minLvl = range[0].toInt()
@@ -406,6 +407,8 @@ class AudioEffectsController(
                     val target = st.bandLevelsMb.getOrElse(b) { 0 }.coerceIn(minLvl, maxLvl).toShort()
                     eq.setBandLevel(b.toShort(), target)
                 }
+                // Desactivar el DSP del ecualizador cuando todas las bandas están en 0 dB (Plano)
+                eq.enabled = hasActiveEq
             } catch (_: Exception) {
             }
         }

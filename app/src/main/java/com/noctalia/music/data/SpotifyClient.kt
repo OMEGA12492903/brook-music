@@ -322,7 +322,6 @@ class SpotifyClient(
     private fun refreshPathfinderHashesFromWebPlayer(): Boolean {
         val now = System.currentTimeMillis()
         if (now - hashesRefreshedAtMs < 60_000L) return false
-        hashesRefreshedAtMs = now
         return try {
             val htmlReq = Request.Builder()
                 .url("https://open.spotify.com/")
@@ -354,6 +353,9 @@ class SpotifyClient(
                     pathfinderHashes[op] = hash
                     updated++
                 }
+            }
+            if (updated > 0) {
+                hashesRefreshedAtMs = System.currentTimeMillis()
             }
             updated > 0
         } catch (_: Exception) {
