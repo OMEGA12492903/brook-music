@@ -1073,20 +1073,30 @@ class MusicPlayerController(
                 val p = activePlayer()
                 val curTrack = _state.value.currentTrack
                 val playing = p?.isPlaying == true
-                if (p != null && curTrack != null && p.mediaItemCount > 0) {
+                if (p != null &&
+                    curTrack != null &&
+                    p.mediaItemCount > 0 &&
+                    p.currentMediaItem?.mediaId == curTrack.id
+                ) {
                     val pos = p.currentPosition.coerceAtLeast(0L)
                     val dur = p.duration.takeIf { it > 0 }
                         ?: (curTrack.duration * 1000L)
 
-                    // SponsorBlock: saltar intros/segmentos no musicales automáticamente
-                    if (playing && audioEffects.state.value.sponsorBlockEnabled && activeSkipSegments.isNotEmpty()) {
+                    // SponsorBlock: saltar intros/segmentos no musicales automáticamente (evitando segmentos
+                    // mal etiquetados que cubran prácticamente toda la canción)
+                    if (playing && dur >= 15_000L && audioEffects.state.value.sponsorBlockEnabled && activeSkipSegments.isNotEmpty()) {
                         val hit = activeSkipSegments.firstOrNull { seg ->
                             val key = "${seg.startMs}_${seg.endMs}"
-                            key !in skippedSegmentKeys && pos >= seg.startMs && pos < (seg.endMs - 800L)
+                            val segLen = seg.endMs - seg.startMs
+                            key !in skippedSegmentKeys &&
+                                segLen < (dur * 4L) / 5L &&
+                                seg.endMs <= dur - 1_500L &&
+                                pos >= seg.startMs &&
+                                pos < (seg.endMs - 800L)
                         }
                         if (hit != null) {
                             skippedSegmentKeys.add("${hit.startMs}_${hit.endMs}")
-                            val target = hit.endMs.coerceAtMost((dur - 500L).coerceAtLeast(0L))
+                            val target = hit.endMs.coerceAtMost((dur - 1_500L).coerceAtLeast(0L))
                             p.seekTo(target)
                             _state.update { it.copy(sponsorSkippedNotice = "Saltado segmento no musical (SponsorBlock)") }
                             scope.launch {

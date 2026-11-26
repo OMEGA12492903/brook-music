@@ -135,12 +135,15 @@ class NoctaliaPlaybackService : MediaLibraryService() {
                 enableFloatOutput: Boolean,
                 enableAudioTrackPlaybackParams: Boolean,
             ): AudioSink {
+                // IMPORTANTE en Media3 1.6.1: `maxSilenceToKeepDurationUs` debe ser SIEMPRE estrictamente
+                // mayor que `minimumSilenceDurationUs` (Media3 usa 2_000_000L por defecto); si es menor,
+                // `calculateShortenedSilenceLength` lanza IllegalStateException al primer silencio y salta de pista.
                 val musicSilenceSkipper = SilenceSkippingAudioProcessor(
-                    /* minimumSilenceDurationUs = */ 650_000L,
-                    /* silenceRetentionRatio = */ 0.05f,
-                    /* maxSilenceToKeepDurationUs = */ 150_000L,
-                    /* minVolumeToKeepPercentageWhenMuting = */ 0,
-                    /* silenceThresholdLevel = */ 160.toShort(),
+                    /* minimumSilenceDurationUs = */ 600_000L,
+                    /* silenceRetentionRatio = */ 0.15f,
+                    /* maxSilenceToKeepDurationUs = */ SilenceSkippingAudioProcessor.DEFAULT_MAX_SILENCE_TO_KEEP_DURATION_US,
+                    /* minVolumeToKeepPercentageWhenMuting = */ SilenceSkippingAudioProcessor.DEFAULT_MIN_VOLUME_TO_KEEP_PERCENTAGE,
+                    /* silenceThresholdLevel = */ 256.toShort(),
                 )
                 val processorChain = DefaultAudioSink.DefaultAudioProcessorChain(
                     emptyArray(),
