@@ -680,7 +680,7 @@ fun LibraryScreen(
 
             "stats" -> {
                 val allStats = remember(library.stats) {
-                    library.stats.values.sortedByDescending { it.listenedSec * 2 + it.playCount * 35L }
+                    library.stats.values.sortedByDescending { it.listenedSec * 2 + it.playCount * 30L }
                 }
                 val totalSec = remember(allStats) { allStats.sumOf { it.listenedSec } }
                 val totalPlays = remember(allStats) { allStats.sumOf { it.playCount } }
@@ -690,7 +690,7 @@ fun LibraryScreen(
                         .map { (artist, list) ->
                             Triple(artist, list.sumOf { it.listenedSec }, list.sumOf { it.playCount })
                         }
-                        .sortedByDescending { it.second * 2 + it.third * 35L }
+                        .sortedByDescending { it.second * 2 + it.third * 30L }
                         .take(8)
                 }
 

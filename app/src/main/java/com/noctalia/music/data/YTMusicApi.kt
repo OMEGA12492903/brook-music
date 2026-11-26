@@ -10,7 +10,6 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 import okhttp3.Interceptor
@@ -145,7 +144,7 @@ class YTMusicApi(private val authStore: AuthStore) {
             apiHttpClient.newCall(reqBuilder.build()).execute().use { resp ->
                 if (!resp.isSuccessful) return null
                 val txt = readBoundedBody(resp) ?: return null
-                json.parseToJsonElement(txt).jsonObject
+                json.parseToJsonElement(txt) as? JsonObject
             }
         } catch (_: Exception) {
             null
@@ -277,7 +276,7 @@ class YTMusicApi(private val authStore: AuthStore) {
             apiHttpClient.newCall(reqBuilder.build()).execute().use { resp ->
                 if (!resp.isSuccessful) return null
                 val bodyTxt = readBoundedBody(resp) ?: return null
-                val root = json.parseToJsonElement(bodyTxt).jsonObject
+                val root = json.parseToJsonElement(bodyTxt) as? JsonObject ?: return null
                 val details = root.obj("videoDetails") ?: return null
                 val title = details.str("title").orEmpty().ifBlank { "Canción de YouTube" }
                 val rawAuthor = details.str("author").orEmpty()
@@ -385,7 +384,7 @@ class YTMusicApi(private val authStore: AuthStore) {
                 apiHttpClient.newCall(req).execute().use { resp ->
                     if (!resp.isSuccessful) return cachedVisitorData
                     val txt = readBoundedBody(resp, maxBytes = 256L * 1024L) ?: return cachedVisitorData
-                    val root = json.parseToJsonElement(txt).jsonObject
+                    val root = json.parseToJsonElement(txt) as? JsonObject ?: return cachedVisitorData
                     val vd = root.obj("responseContext")?.str("visitorData")?.takeIf { it.length in 10..2048 }
                     if (vd != null) {
                         cachedVisitorData = vd
@@ -522,7 +521,7 @@ class YTMusicApi(private val authStore: AuthStore) {
             apiHttpClient.newCall(reqBuilder.build()).execute().use { resp ->
                 if (!resp.isSuccessful) return null
                 val bodyTxt = readBoundedBody(resp) ?: return null
-                val root = json.parseToJsonElement(bodyTxt).jsonObject
+                val root = json.parseToJsonElement(bodyTxt) as? JsonObject ?: return null
                 val status = root.obj("playabilityStatus")?.str("status")
                 if (status != "OK") return null
 

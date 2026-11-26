@@ -63,7 +63,6 @@ import java.util.concurrent.atomic.AtomicReference
 private const val SPOTIFY_COLLECTION_URL = "https://open.spotify.com/collection/tracks"
 private const val SPOTIFY_LOGIN_URL =
     "https://accounts.spotify.com/login?continue=https%3A%2F%2Fopen.spotify.com%2Fcollection%2Ftracks"
-private const val BRIDGE_NAME = "BrookSpBridge"
 
 /**
  * Puente público para WebView (`@JavascriptInterface` requiere clase y métodos públicos en Android/R8).
@@ -162,9 +161,9 @@ private fun hasSpotifySessionCookie(): Boolean {
     }
 }
 
-private fun wipeSpotifyWebView(webView: WebView?) {
+private fun wipeSpotifyWebView(webView: WebView?, bridgeName: String) {
     try {
-        webView?.removeJavascriptInterface(BRIDGE_NAME)
+        webView?.removeJavascriptInterface(bridgeName)
         webView?.stopLoading()
         webView?.clearHistory()
         webView?.clearCache(true)
@@ -184,26 +183,29 @@ private fun wipeSpotifyWebView(webView: WebView?) {
  * de contraseña o login SSO). Captura sin bloquear el Bearer autenticado y `client-token` emitidos
  * por el propio reproductor web oficial de Spotify (`/api/token`, `clienttoken.spotify.com`, fetch/XHR).
  */
-private fun buildSpotifyCaptureJs(nonce: String): String = """
+private fun buildSpotifyCaptureJs(bridgeName: String, nonce: String): String = """
 (function() {
   if (window.top !== window) return;
   if (location.hostname !== 'open.spotify.com') return;
   if (window.__brookSpHooked) return;
   window.__brookSpHooked = true;
+  var __bridge = "$bridgeName";
   var __nonce = "$nonce";
 
   function notifyToken(bearer, clientToken, verifiedUser) {
     try {
-      if (window.BrookSpBridge && typeof window.BrookSpBridge.onToken === 'function') {
-        window.BrookSpBridge.onToken(__nonce, bearer || '', clientToken || '', !!verifiedUser);
+      var br = window[__bridge];
+      if (br && typeof br.onToken === 'function') {
+        br.onToken(__nonce, bearer || '', clientToken || '', !!verifiedUser);
       }
     } catch (e) {}
   }
 
   function notifyLoggedIn(flag) {
     try {
-      if (window.BrookSpBridge && typeof window.BrookSpBridge.onPageLoggedIn === 'function') {
-        window.BrookSpBridge.onPageLoggedIn(__nonce, !!flag);
+      var br = window[__bridge];
+      if (br && typeof br.onPageLoggedIn === 'function') {
+        br.onPageLoggedIn(__nonce, !!flag);
       }
     } catch (e) {}
   }
@@ -393,8 +395,9 @@ fun SpotifyLoginDialog(
     onLoginSuccess: (bearerToken: String, clientToken: String?) -> Unit,
 ) {
     val captured = remember { AtomicBoolean(false) }
+    val bridgeName = remember { "_" + UUID.randomUUID().toString().replace("-", "").take(16) }
     val bridgeNonce = remember { UUID.randomUUID().toString() }
-    val captureJs = remember(bridgeNonce) { buildSpotifyCaptureJs(bridgeNonce) }
+    val captureJs = remember(bridgeName, bridgeNonce) { buildSpotifyCaptureJs(bridgeName, bridgeNonce) }
     val pendingBearer = remember { AtomicReference<String?>(null) }
     val pendingClient = remember { AtomicReference<String?>(null) }
     val pageLoggedIn = remember { AtomicBoolean(false) }
@@ -417,7 +420,7 @@ fun SpotifyLoginDialog(
         if (c != null && captured.compareAndSet(false, true)) {
             view?.post {
                 statusText = "¡Cuenta conectada!"
-                wipeSpotifyWebView(view)
+                wipeSpotifyWebView(view, bridgeName)
                 onLoginSuccess(b, c)
             }
         } else if (fallbackScheduled.compareAndSet(false, true)) {
@@ -429,7 +432,7 @@ fun SpotifyLoginDialog(
                 val finalBearer = pendingBearer.get()
                 val finalClient = pendingClient.get()
                 if (finalBearer != null && captured.compareAndSet(false, true)) {
-                    wipeSpotifyWebView(view)
+                    wipeSpotifyWebView(view, bridgeName)
                     onLoginSuccess(finalBearer, finalClient)
                 }
             }, 1800L)
@@ -463,7 +466,7 @@ fun SpotifyLoginDialog(
     Dialog(
         onDismissRequest = {
             captured.set(true)
-            wipeSpotifyWebView(webViewRef)
+            wipeSpotifyWebView(webViewRef, bridgeName)
             onDismiss()
         },
         properties = DialogProperties(
@@ -477,7 +480,7 @@ fun SpotifyLoginDialog(
             onDispose {
                 captured.set(true)
                 dialogWindow?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
-                wipeSpotifyWebView(webViewRef)
+                wipeSpotifyWebView(webViewRef, bridgeName)
                 try {
                     webViewRef?.destroy()
                 } catch (_: Exception) {
@@ -584,7 +587,7 @@ fun SpotifyLoginDialog(
                 IconButton(
                     onClick = {
                         captured.set(true)
-                        wipeSpotifyWebView(webViewRef)
+                        wipeSpotifyWebView(webViewRef, bridgeName)
                         onDismiss()
                     },
                     modifier = Modifier.size(36.dp),
@@ -655,7 +658,7 @@ fun SpotifyLoginDialog(
                                 }
                             },
                         )
-                        addJavascriptInterface(bridge, BRIDGE_NAME)
+                        addJavascriptInterface(bridge, bridgeName)
 
                         webChromeClient = object : WebChromeClient() {
                             override fun onCreateWindow(
@@ -794,10 +797,19 @@ fun SpotifyLoginDialog(
                                 view: WebView?,
                                 request: WebResourceRequest?,
                             ): WebResourceResponse? {
+                                val uri = request?.url
+                                val scheme = uri?.scheme?.lowercase()
+                                if (scheme != null &&
+                                    scheme != "https" &&
+                                    scheme != "data" &&
+                                    scheme != "blob" &&
+                                    scheme != "about"
+                                ) {
+                                    return WebResourceResponse("text/plain", "UTF-8", 403, "Blocked", emptyMap(), ByteArray(0).inputStream())
+                                }
                                 if (!captured.get() && request != null) {
-                                    val uri = request.url
                                     val host = uri?.host?.lowercase()?.trimEnd('.')
-                                    if (uri?.scheme.equals("https", ignoreCase = true) && isSpotifyApiHost(host)) {
+                                    if (scheme == "https" && isSpotifyApiHost(host)) {
                                         val hdrs = request.requestHeaders.orEmpty()
                                         val rawAuth = hdrs.entries
                                             .firstOrNull { it.key.equals("authorization", ignoreCase = true) }

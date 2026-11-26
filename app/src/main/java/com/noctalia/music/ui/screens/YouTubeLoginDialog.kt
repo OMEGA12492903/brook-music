@@ -5,6 +5,7 @@ import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.CookieManager
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -198,6 +199,22 @@ fun YouTubeLoginDialog(
                                 val uri = request?.url ?: return true
                                 if (!uri.scheme.equals("https", ignoreCase = true)) return true
                                 return !isAllowedLoginHost(uri.host)
+                            }
+
+                            override fun shouldInterceptRequest(
+                                view: WebView?,
+                                request: WebResourceRequest?,
+                            ): WebResourceResponse? {
+                                val scheme = request?.url?.scheme?.lowercase()
+                                if (scheme != null &&
+                                    scheme != "https" &&
+                                    scheme != "data" &&
+                                    scheme != "blob" &&
+                                    scheme != "about"
+                                ) {
+                                    return WebResourceResponse("text/plain", "UTF-8", 403, "Blocked", emptyMap(), ByteArray(0).inputStream())
+                                }
+                                return super.shouldInterceptRequest(view, request)
                             }
 
                             override fun onPageFinished(view: WebView?, url: String?) {

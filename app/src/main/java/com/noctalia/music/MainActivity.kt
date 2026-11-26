@@ -596,6 +596,7 @@ private fun NoctaliaRootScreen(
                     vm.openArtistPage(artist.substringBefore(",").trim(), fallbackName = artist.substringBefore(",").trim())
                 },
                 onPlayPause = { vm.player.togglePlayPause() },
+                onRetryError = { vm.player.retryCurrentTrack() },
                 onNext = { vm.player.skipNext() },
                 onPrev = { vm.player.skipPrevious() },
                 onSeek = { vm.player.seekTo(it) },

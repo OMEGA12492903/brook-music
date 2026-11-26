@@ -16,7 +16,6 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.longOrNull
 import okhttp3.Interceptor
 import okhttp3.OkHttpClient
@@ -98,7 +97,10 @@ class AppUpdater(private val context: Context) {
                         return@use
                     }
 
-                    val root = json.parseToJsonElement(bodyStr).jsonObject
+                    val root = json.parseToJsonElement(bodyStr) as? JsonObject ?: run {
+                        lastErr = "Respuesta de GitHub inválida."
+                        return@use
+                    }
                     val tagName = root.str("tag_name") ?: ""
                     val relName = root.str("name") ?: ""
                     val bodyText = root.str("body") ?: ""
@@ -321,10 +323,12 @@ class AppUpdater(private val context: Context) {
         fun isAllowedGithubUrl(url: String?): Boolean {
             val u = url?.trim() ?: return false
             return try {
-                val parsed = URI(u)
+                val parsed = URI(u).normalize()
                 if (!parsed.scheme.equals("https", ignoreCase = true)) return false
+                if (parsed.userInfo != null) return false
                 val host = parsed.host?.lowercase()?.trimEnd('.') ?: return false
                 val path = parsed.path ?: ""
+                if (path.contains("..")) return false
                 when {
                     host == "github.com" -> path.startsWith("/$REPO_SLUG/")
                     host == "api.github.com" -> path.startsWith("/repos/$REPO_SLUG/")

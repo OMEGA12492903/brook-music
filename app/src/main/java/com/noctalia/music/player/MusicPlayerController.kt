@@ -85,11 +85,18 @@ class MusicPlayerController(
         run {
             val lib = library.state.value
             val snap = lib.lastSession
+            val savedRepeat = when (lib.settings.loopStatus) {
+                "Playlist" -> RepeatMode.PLAYLIST
+                "Track" -> RepeatMode.TRACK
+                else -> RepeatMode.NONE
+            }
             PlayerUiState(
                 currentTrack = snap?.track,
                 positionMs = snap?.positionMs ?: 0L,
                 durationMs = (snap?.track?.duration ?: 0) * 1000L,
                 queue = snap?.queue.orEmpty(),
+                shuffle = lib.settings.shuffle,
+                repeatMode = savedRepeat,
                 autoRadio = lib.settings.autoRadio,
             )
         }
@@ -1938,6 +1945,7 @@ class MusicPlayerController(
     fun toggleShuffle() {
         plannedNextTrackId = null
         val nextShuffle = !_state.value.shuffle
+        library.updateShuffle(nextShuffle)
         _state.update { it.copy(shuffle = nextShuffle) }
         if (nextShuffle && _state.value.autoRadio) {
             smartShuffleTracksSinceInject = 1
@@ -2013,15 +2021,33 @@ class MusicPlayerController(
 
     fun cycleRepeat() {
         plannedNextTrackId = null
-        _state.update {
-            val nxt = when (it.repeatMode) {
-                RepeatMode.NONE -> RepeatMode.PLAYLIST
-                RepeatMode.PLAYLIST -> RepeatMode.TRACK
-                RepeatMode.TRACK -> RepeatMode.NONE
-            }
-            it.copy(repeatMode = nxt)
+        val nxt = when (_state.value.repeatMode) {
+            RepeatMode.NONE -> RepeatMode.PLAYLIST
+            RepeatMode.PLAYLIST -> RepeatMode.TRACK
+            RepeatMode.TRACK -> RepeatMode.NONE
         }
+        library.updateLoopStatus(
+            when (nxt) {
+                RepeatMode.PLAYLIST -> "Playlist"
+                RepeatMode.TRACK -> "Track"
+                RepeatMode.NONE -> "None"
+            }
+        )
+        _state.update { it.copy(repeatMode = nxt) }
         syncNextMediaItemInPlayer(alsoPrefetch = true)
+    }
+
+    fun retryCurrentTrack() {
+        val cur = _state.value.currentTrack ?: return
+        retriedCurrent = false
+        consecutiveAutoErrors = 0
+        playTrack(
+            track = cur,
+            pushHistory = false,
+            forceFreshUrl = SecurityValidators.isValidVideoId(cur.id),
+            preferHls = false,
+            startPositionMs = _state.value.positionMs,
+        )
     }
 
     fun setAutoRadio(enabled: Boolean) {

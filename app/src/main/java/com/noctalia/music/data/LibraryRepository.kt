@@ -243,6 +243,19 @@ class LibraryRepository(context: Context) {
         persist(cur.copy(settings = cur.settings.copy(autoRadio = enabled)))
     }
 
+    fun updateShuffle(enabled: Boolean) {
+        val cur = _state.value
+        if (cur.settings.shuffle == enabled) return
+        persist(cur.copy(settings = cur.settings.copy(shuffle = enabled)))
+    }
+
+    fun updateLoopStatus(loopStatus: String) {
+        val safe = if (loopStatus in ALLOWED_LOOP_STATUS) loopStatus else "None"
+        val cur = _state.value
+        if (cur.settings.loopStatus == safe) return
+        persist(cur.copy(settings = cur.settings.copy(loopStatus = safe)))
+    }
+
     fun updatePlayerBgStyle(styleId: String) {
         val safe = if (styleId in ALLOWED_BG_STYLES) styleId else "liquid"
         val cur = _state.value

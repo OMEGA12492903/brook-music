@@ -30,7 +30,6 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
@@ -201,7 +200,7 @@ class GitHubCloudSync(
     private fun startAutoSyncObserver() {
         scope.launch {
             library.state
-                .map { Triple(it.stats, it.favorites, it.playlists) }
+                .map { cloudSnapshotFrom(it) }
                 .distinctUntilChanged()
                 .drop(1)
                 .debounce(AUTO_SYNC_DEBOUNCE_MS)
@@ -324,9 +323,19 @@ class GitHubCloudSync(
         }
     }
 
+    private fun cloudSnapshotFrom(
+        payload: LibraryPayload,
+    ): Triple<Map<String, TrackStat>, List<Track>, Map<String, List<Track>>> {
+        val cloudStats = payload.stats.filterValues { !SecurityValidators.isLocalTrackId(it.track.id) }
+        val cloudFavs = payload.favorites.filterNot { SecurityValidators.isLocalTrackId(it.id) }
+        val cloudPls = payload.playlists
+            .mapValues { (_, list) -> list.filterNot { SecurityValidators.isLocalTrackId(it.id) } }
+            .filterValues { it.isNotEmpty() }
+        return Triple(cloudStats, cloudFavs, cloudPls)
+    }
+
     private fun currentLibrarySnapshot(): Triple<Map<String, TrackStat>, List<Track>, Map<String, List<Track>>> {
-        val st = library.state.value
-        return Triple(st.stats, st.favorites, st.playlists)
+        return cloudSnapshotFrom(library.state.value)
     }
 
     private fun fetchRemoteBackup(token: String): Result<Pair<String?, CloudBackupPayload?>> {
@@ -348,7 +357,8 @@ class GitHubCloudSync(
                     )
                     in 200..299 -> {
                         val raw = readBounded(resp) ?: return Result.failure(IOException("Copia remota demasiado grande."))
-                        val root = json.parseToJsonElement(raw).jsonObject
+                        val root = json.parseToJsonElement(raw) as? JsonObject
+                            ?: return Result.failure(IOException("Respuesta inválida de GitHub."))
                         val sha = (root["sha"] as? JsonPrimitive)?.contentOrNull
                         val contentB64 = (root["content"] as? JsonPrimitive)?.contentOrNull
                             ?.replace("\n", "")
@@ -404,8 +414,8 @@ class GitHubCloudSync(
                         val raw = readBounded(resp)
                         val newSha = try {
                             raw?.let {
-                                val root = json.parseToJsonElement(it).jsonObject
-                                ((root["content"] as? JsonObject)?.get("sha") as? JsonPrimitive)?.contentOrNull
+                                val root = json.parseToJsonElement(it) as? JsonObject
+                                ((root?.get("content") as? JsonObject)?.get("sha") as? JsonPrimitive)?.contentOrNull
                             }
                         } catch (_: Exception) {
                             null

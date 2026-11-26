@@ -370,6 +370,7 @@ fun FullPlayerOverlay(
     onToggleDynamicAppTheme: (Boolean) -> Unit,
     onArtistClick: (String) -> Unit,
     onPlayPause: () -> Unit,
+    onRetryError: () -> Unit,
     onNext: () -> Unit,
     onPrev: () -> Unit,
     onSeek: (Long) -> Unit,
@@ -1315,7 +1316,9 @@ fun FullPlayerOverlay(
                                 color = NoctaliaColors.Danger,
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.SemiBold,
-                                modifier = Modifier.padding(top = 4.dp),
+                                modifier = Modifier
+                                    .padding(top = 4.dp)
+                                    .clickable(onClick = onRetryError),
                             )
                         }
 

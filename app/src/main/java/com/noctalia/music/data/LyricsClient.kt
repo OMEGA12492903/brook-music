@@ -7,7 +7,6 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonObject
 import okhttp3.HttpUrl
 import okhttp3.Interceptor
 import okhttp3.OkHttpClient
@@ -293,7 +292,8 @@ class LyricsClient {
             client.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) return null
                 val raw = readBounded(resp) ?: return null
-                parseLrclibObject(json.parseToJsonElement(raw).jsonObject)
+                val obj = json.parseToJsonElement(raw) as? JsonObject ?: return null
+                parseLrclibObject(obj)
             }
         } catch (_: Exception) {
             null

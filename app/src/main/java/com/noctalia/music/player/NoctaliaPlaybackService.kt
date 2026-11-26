@@ -4,6 +4,7 @@ import android.app.PendingIntent
 import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
+import android.media.AudioManager
 import android.net.Uri
 import android.provider.MediaStore
 import androidx.annotation.OptIn
@@ -121,6 +122,7 @@ class NoctaliaPlaybackService : MediaLibraryService() {
         resolvingFactory: ResolvingDataSource.Factory,
         audioAttrs: AudioAttributes,
         handleFocus: Boolean,
+        sharedAudioSessionId: Int,
     ): ExoPlayer {
         // RenderersFactory afinado para MÚSICA (evita el efecto "acelerado" en partes suaves al activar
         // «Saltar silencios» y evita acelerones de recuperación de AudioTrack en Bluetooth/HyperOS):
@@ -173,6 +175,14 @@ class NoctaliaPlaybackService : MediaLibraryService() {
             .setHandleAudioBecomingNoisy(handleFocus)
             .setWakeMode(C.WAKE_MODE_NETWORK)
             .build()
+            .apply {
+                if (sharedAudioSessionId > 0) {
+                    try {
+                        audioSessionId = sharedAudioSessionId
+                    } catch (_: Throwable) {
+                    }
+                }
+            }
     }
 
     @OptIn(UnstableApi::class)
@@ -276,8 +286,19 @@ class NoctaliaPlaybackService : MediaLibraryService() {
             .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
             .build()
 
-        val deckA = createDeck(resolvingDataSourceFactory, audioAttrs, handleFocus = true)
-        val deckB = createDeck(resolvingDataSourceFactory, audioAttrs, handleFocus = false)
+        // Sesión DSP compartida entre ambos decks para que Equalizer, BassBoost y LoudnessEnhancer
+        // procesen también la pista entrante durante el Crossfade sin saltos ni recreaciones al terminar.
+        val sharedAudioSessionId = try {
+            (getSystemService(Context.AUDIO_SERVICE) as? AudioManager)
+                ?.generateAudioSessionId()
+                ?.takeIf { it > 0 && it != AudioManager.ERROR }
+                ?: C.AUDIO_SESSION_ID_UNSET
+        } catch (_: Throwable) {
+            C.AUDIO_SESSION_ID_UNSET
+        }
+
+        val deckA = createDeck(resolvingDataSourceFactory, audioAttrs, handleFocus = true, sharedAudioSessionId = sharedAudioSessionId)
+        val deckB = createDeck(resolvingDataSourceFactory, audioAttrs, handleFocus = false, sharedAudioSessionId = sharedAudioSessionId)
         activeDeck = deckA
         secondaryDeck = deckB
 

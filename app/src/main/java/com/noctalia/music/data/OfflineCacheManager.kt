@@ -214,6 +214,7 @@ class OfflineCacheManager(
         _state.value = scanDisk(inFlightIds.toSet())
     }
 
+    @Synchronized
     fun clearAll() {
         val activeTmpNames = inFlightIds.map { "$it.tmp" }.toSet()
         dir.listFiles()?.forEach { f ->

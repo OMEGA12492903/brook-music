@@ -18,7 +18,6 @@ import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
@@ -259,7 +258,8 @@ class SpotifyClient(
                 val m = NEXT_DATA_RE.find(html)
                     ?: return Result.failure(IOException("No se pudieron leer los datos de Spotify."))
 
-                val root = json.parseToJsonElement(m.groupValues[1]).jsonObject
+                val root = json.parseToJsonElement(m.groupValues[1]) as? JsonObject
+                    ?: return Result.failure(IOException("Formato inesperado de Spotify."))
                 val entity = root.spObj("props")
                     ?.spObj("pageProps")
                     ?.spObj("state")
@@ -399,7 +399,9 @@ class SpotifyClient(
                         in 200..299 -> {
                             val txt = readBounded(resp)
                                 ?: return Result.failure(IOException("Respuesta demasiado grande."))
-                            Result.success(json.parseToJsonElement(txt).jsonObject)
+                            val obj = json.parseToJsonElement(txt) as? JsonObject
+                                ?: return Result.failure(IOException("Respuesta inválida de Spotify."))
+                            Result.success(obj)
                         }
                         401 -> Result.failure(
                             SecurityException("Sesión de Spotify caducada. Pulsa «Reconectar».")
@@ -707,7 +709,9 @@ class SpotifyClient(
                         in 200..299 -> {
                             val txt = readBounded(resp)
                                 ?: return Result.failure(IOException("Respuesta demasiado grande."))
-                            Result.success(json.parseToJsonElement(txt).jsonObject)
+                            val obj = json.parseToJsonElement(txt) as? JsonObject
+                                ?: return Result.failure(IOException("Respuesta inválida de Spotify."))
+                            Result.success(obj)
                         }
                         401 -> Result.failure(
                             SecurityException("Sesión de Spotify caducada. Pulsa «Reconectar».")
